@@ -28,6 +28,7 @@ NETWORK_GATEWAY=${NETWORK_GATEWAY:-10.0.0.1}
 GITDIR["python-troveclient"]=$DEST/python-troveclient
 
 TROVE_DIR=$DEST/trove
+TROVECLIENT_DIR=$DEST/python-troveclient
 TROVE_CONF_DIR=/etc/trove
 TROVE_LOCAL_CONF_DIR=$TROVE_DIR/etc/trove
 TROVE_AUTH_CACHE_DIR=${TROVE_AUTH_CACHE_DIR:-/var/cache/trove}
@@ -113,6 +114,10 @@ function cleanup_trove {
     rm -fr $TROVE_CONF_DIR/*
 }
 
+# configure_troveclient() - Set config files, create data dirs, etc
+function configure_troveclient {
+    setup_develop $TROVECLIENT_DIR
+}
 
 # configure_trove() - Set config files, create data dirs, etc
 function configure_trove {

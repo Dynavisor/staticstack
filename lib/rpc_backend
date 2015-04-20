@@ -99,7 +99,17 @@ function install_rpc_backend {
         # Install rabbitmq-server
         # the temp file is necessary due to LP: #878600
         tfile=$(mktemp)
-        install_package rabbitmq-server > "$tfile" 2>&1
+	if is_freebsd; then
+	    #install_package rabbitmq > "$tfile" 2>&1
+	    rc_add rpcbind_enable YES
+            rc_add rpc_lockd_enable YES
+            rc_add rpc_statd_enable YES
+            rc_add rabbitmq_enable YES
+	    if [[ -f /var/db/rabbitmq/.erlang.cookie ]]; then	    		sudo chown -f rabbitmq:rabbitmq /var/db/rabbitmq/.erlang.cookie
+            fi
+	else
+            install_package rabbitmq-server > "$tfile" 2>&1
+	fi
         cat "$tfile"
         rm -f "$tfile"
     elif is_service_enabled qpid; then
@@ -149,6 +159,8 @@ function restart_rpc_backend {
             if is_fedora || is_suse; then
                 # service is not started by default
                 restart_service rabbitmq-server
+	    elif is_freebsd; then
+	        restart_service rabbitmq
             fi
             rabbit_setuser "$RABBIT_USERID" "$RABBIT_PASSWORD"
             # change the rabbit password since the default is "guest"

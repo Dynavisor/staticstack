@@ -101,6 +101,9 @@ fi
 
 if is_service_enabled nova; then
     stop_nova
+    # kill dnsmasq since devstack will rm NOVA_STATE_PATH which contains the file that _dhcp_file is looking for
+    sudo killall dnsmasq
+    #  sudo kill $(cat /opt/stack/data/nova/networks/nova-bridge0.pid)
 fi
 
 if is_service_enabled glance; then
@@ -138,7 +141,11 @@ fi
 if [[ -n "$UNSTACK_ALL" ]]; then
     # Stop MySQL server
     if is_service_enabled mysql; then
-        stop_service mysql
+        if ! is_freebsd; then
+             stop_service mysql
+        else
+             stop_service mysql-server
+        fi
     fi
 
     if is_service_enabled postgresql; then
@@ -147,7 +154,11 @@ if [[ -n "$UNSTACK_ALL" ]]; then
 
     # Stop rabbitmq-server
     if is_service_enabled rabbit; then
-        stop_service rabbitmq-server
+        if ! is_freebsd; then
+             stop_service rabbitmq-server
+        else
+             stop_service rabbitmq
+        fi
     fi
 fi
 

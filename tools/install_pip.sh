@@ -82,14 +82,14 @@ get_versions
 # Do pip
 
 # Eradicate any and all system packages
-uninstall_package python-pip
+# uninstall_package python-pip
 
-install_get_pip
+# install_get_pip
 
 if [[ -n $PYPI_ALTERNATIVE_URL ]]; then
     configure_pypi_alternative_url
 fi
 
-pip_install -U setuptools
+# pip_install -U setuptools
 
 get_versions

@@ -18,18 +18,47 @@
 PASSES=""
 FAILURES=""
 
+# Check the return code and add the test to PASSES or FAILURES as appropriate
+# pass_fail <result> <expected> <name>
+function pass_fail {
+    local result=$1
+    local expected=$2
+    local test_name=$3
+
+    if [[ $result -ne $expected ]]; then
+        FAILURES="$FAILURES $test_name"
+    else
+        PASSES="$PASSES $test_name"
+    fi
+}
+
+if [[ -n $@ ]]; then
+    FILES=$@
+else
+    LIBS=`find lib -type f | grep -v \.md`
+    SCRIPTS=`find . -type f -name \*\.sh`
+    EXTRA="functions functions-common stackrc openrc exerciserc eucarc"
+    FILES="$SCRIPTS $LIBS $EXTRA"
+fi
+
+echo "Running bash8..."
+
+./tools/bash8.py -v $FILES
+pass_fail $? 0 bash8
+
+
 # Test that no one is trying to land crazy refs as branches
 
-for testfile in tests/test_*.sh; do
-    $testfile
-    if [[ $? -eq 0 ]]; then
-        PASSES="$PASSES $testfile"
-    else
-        FAILURES="$FAILURES $testfile"
-    fi
-done
+echo "Ensuring we don't have crazy refs"
 
-# Summary display now that all is said and done
+REFS=`grep BRANCH stackrc | egrep -v -- '(-master|-stable/icehouse)'`
+rc=$?
+pass_fail $rc 1 crazy-refs
+if [[ $rc -eq 0 ]]; then
+    echo "Branch defaults must be master. Found:"
+    echo $REFS
+fi
+
 echo "====================================================================="
 for script in $PASSES; do
     echo PASS $script

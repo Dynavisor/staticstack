@@ -67,7 +67,14 @@ function inicomment {
     local file=$1
     local section=$2
     local option=$3
-    sed -i -e "/^\[$section\]/,/^\[.*\]/ s|^\($option[ \t]*=.*$\)|#\1|" "$file"
+    local sed_re='/^\[$section\]/,/^\[.*\]/ s|^\($option[ \t]*=.*$\)|#\1|'
+    
+    if is_freebsd; then
+        sed -i '' -e "$sed_re" "$file"
+    else
+        sed -i -e $sed_re "$file"
+    fi
+    
     $xtrace
 }
 
@@ -131,13 +138,23 @@ function iniset {
     fi
     if ! ini_has_option "$file" "$section" "$option"; then
         # Add it
-        sed -i -e "/^\[$section\]/ a\\
+        if is_freebsd; then
+            sed -i '' -e "/^\[$section\]/ a\\
 $option = $value
 " "$file"
+        else
+            sed -i -e "/^\[$section\]/ a\\
+$option = $value
+" "$file"
+        fi
     else
         local sep=$(echo -ne "\x01")
         # Replace it
-        sed -i -e '/^\['${section}'\]/,/^\[.*\]/ s'${sep}'^\('${option}'[ \t]*=[ \t]*\).*$'${sep}'\1'"${value}"${sep} "$file"
+        if is_freebsd; then
+            sed -i '' -e '/^\['${section}'\]/,/^\[.*\]/ s'${sep}'^\('${option}'[ \t]*=[ \t]*\).*$'${sep}'\1'"${value}"${sep} "$file"
+        else
+            sed -i -e '/^\['${section}'\]/,/^\[.*\]/ s'${sep}'^\('${option}'[ \t]*=[ \t]*\).*$'${sep}'\1'"${value}"${sep} "$file"
+        fi
     fi
     $xtrace
 }
@@ -163,7 +180,12 @@ function iniset_multiline {
         echo -e "\n[$section]" >>"$file"
     else
         # Remove old values
-        sed -i -e "/^\[$section\]/,/^\[.*\]/ { /^$option[ \t]*=/ d; }" "$file"
+        local sed_re="/^\[$section\]/,/^\[.*\]/ { /^$option[ \t]*=/ d; }"
+        if is_freebsd; then
+            sed -i '' -e $sed_re "$file"
+        else
+            sed -i -e $sed_re "$file"
+        fi
     fi
     # Add new ones
     for v in $values; do
@@ -182,7 +204,12 @@ function iniuncomment {
     local file=$1
     local section=$2
     local option=$3
-    sed -i -e "/^\[$section\]/,/^\[.*\]/ s|[^ \t]*#[ \t]*\($option[ \t]*=.*$\)|\1|" "$file"
+    local sed_re="/^\[$section\]/,/^\[.*\]/ s|[^ \t]*#[ \t]*\($option[ \t]*=.*$\)|\1|"
+    if is_freebsd; then
+        sed -i '' -e "$sed_re" "$file"
+    else
+        sed -i -e $sed_re "$file"
+    fi
     $xtrace
 }
 
@@ -234,6 +261,15 @@ function die {
     # Give buffers a second to flush
     sleep 1
     exit $exitcode
+}
+
+function _dev_exit() {
+    set +o xtrace
+    local banner='################################################'
+    echo $banner 1>&2;
+    echo "$@" 1>&2;
+    echo $banner 1>&2;
+    exit 777
 }
 
 # Checks an environment variable is not set or has length 0 OR if the
@@ -305,6 +341,20 @@ function is_set {
     eval "[ -n \"$var\" ]" # For ex.: sh -c "[ -n \"$var\" ]" would be better, but several exercises depends on this
 }
 
+# Wrapper to account for local host 'install' differences
+function host_install {
+    local inst_src="$1"
+    local inst_dst="$2"
+
+    if is_freebsd; then
+        local inst_arg=""
+    else
+        local inst_arg="-D"
+    fi
+
+    sudo install $inst_arg -m 0644 -o $STACK_USER $inst_src $inst_dst
+}
+
 # Prints line number and "message" in warning format
 # warn $LINENO "message"
 function warn {
@@ -355,6 +405,13 @@ function GetOSVersion {
         else
             os_CODENAME=""
         fi
+    elif [[ `uname -s` == "FreeBSD" ]]; then
+        os_VENDOR="FreeBSD"
+        os_RELEASE=$(uname -r)
+        os_UPDATE=${os_RELEASE##*.}
+        os_RELEASE=${os_RELEASE%.*}
+        os_PACKAGE="pkg"
+        os_CODENAME=""	
     elif [[ -x $(which lsb_release 2>/dev/null) ]]; then
         os_VENDOR=$(lsb_release -i -s)
         os_RELEASE=$(lsb_release -r -s)
@@ -431,6 +488,9 @@ function GetDistro {
     elif [[ "$os_VENDOR" =~ (Fedora) ]]; then
         # For Fedora, just use 'f' and the release
         DISTRO="f$os_RELEASE"
+    elif [[ "$os_VENDOR" =~ (FreeBSD) ]]; then
+        # For FreeBSD, just use 'freebsd' and the release
+        DISTRO="freebsd$os_RELEASE"	
     elif [[ "$os_VENDOR" =~ (openSUSE) ]]; then
         DISTRO="opensuse-$os_RELEASE"
     elif [[ "$os_VENDOR" =~ (SUSE LINUX) ]]; then
@@ -471,6 +531,13 @@ function is_fedora {
     [ "$os_VENDOR" = "Fedora" ] || [ "$os_VENDOR" = "Red Hat" ] || [ "$os_VENDOR" = "CentOS" ]
 }
 
+function is_freebsd {
+    if [[ -z "$os_VENDOR" ]]; then
+        GetOSVersion
+    fi
+
+    [ "$os_VENDOR" = "FreeBSD" ]
+}
 
 # Determine if current distribution is a SUSE-based distribution
 # (openSUSE, SLE).
@@ -672,11 +739,12 @@ function get_default_host_ip {
     local host_ip=$4
 
     # Find the interface used for the default route
-    host_ip_iface=${host_ip_iface:-$(ip route | sed -n '/^default/{ s/.*dev \(\w\+\)\s\+.*/\1/; p; }' | head -1)}
+    host_ip_iface=${host_ip_iface:-$(get_default_iface)}
+    
     # Search for an IP unless an explicit is set by ``HOST_IP`` environment variable
     if [ -z "$host_ip" -o "$host_ip" == "dhcp" ]; then
         host_ip=""
-        host_ips=`LC_ALL=C ip -f inet addr show ${host_ip_iface} | awk '/inet/ {split($2,parts,"/");  print parts[1]}'`
+        host_ips=$(get_host_ips ${host_ip_iface})
         for IP in $host_ips; do
             # Attempt to filter out IP addresses that are part of the fixed and
             # floating range. Note that this method only works if the ``netaddr``
@@ -707,6 +775,32 @@ function get_field {
         echo "$data" | awk -F'[ \t]*\\|[ \t]*' "{print $field}"
     done
 }
+
+# Get interface used for the default route
+function get_default_iface() {
+    local iface
+
+    if is_freebsd; then
+        iface=`netstat -rn | grep default | awk '{print $6}'`
+    else
+        iface=`ip route | sed -n '/^default/{ s/.*dev \(\w\+\)\s\+.*/\1/; p; }' | head -1`
+    fi
+    echo "$iface"
+}
+
+# Get list of IPs on the interface
+function get_host_ips() {
+    local iface=$1
+    local ips
+
+    if is_freebsd; then
+        ips=`ifconfig ${iface} | grep 'inet ' | cut -d' ' -f2`
+    else
+        ips=`LC_ALL=C ip -f inet addr show ${iface} | awk '/inet/ {split($2,parts,"/");  print parts[1]}'`
+    fi
+    echo "$ips"
+}
+
 
 # Add a policy to a policy.json file
 # Do nothing if the policy already exists
@@ -747,6 +841,8 @@ function _get_package_dir {
         pkg_dir=$FILES/apts
     elif is_fedora; then
         pkg_dir=$FILES/rpms
+    elif is_freebsd; then
+        pkg_dir=$FILES/pkg-freebsd	
     elif is_suse; then
         pkg_dir=$FILES/rpms-suse
     else
@@ -912,6 +1008,9 @@ function install_package {
     elif is_fedora; then
         $xtrace
         yum_install "$@"
+    elif is_freebsd; then
+        $xtrace
+        sudo pkg install -y "$@"	
     elif is_suse; then
         $xtrace
         zypper_install "$@"
@@ -936,6 +1035,8 @@ function is_package_installed {
         dpkg -s "$@" > /dev/null 2> /dev/null
     elif [[ "$os_PACKAGE" = "rpm" ]]; then
         rpm --quiet -q "$@"
+    elif [[ "$os_PACKAGE" = "pkg" ]]; then
+        pkg info "$@" > /dev/null 2> /dev/null	
     else
         exit_distro_not_supported "finding if a package is installed"
     fi
@@ -948,6 +1049,8 @@ function uninstall_package {
         apt_get purge "$@"
     elif is_fedora; then
         sudo yum remove -y "$@"
+    elif is_freebsd; then
+        sudo pkg delete "$@"	
     elif is_suse; then
         sudo zypper rm "$@"
     else
@@ -1121,7 +1224,11 @@ function screen_service {
         # The pid saved can be used in stop_process() as a process group
         # id to kill off all child processes
         if [[ -n "$group" ]]; then
+            if ! is_freebsd; then
             command="sg $group '$command'"
+            else
+            command="sudo -g $group $command"
+            fi
         fi
         screen -S $SCREEN_NAME -p $service -X stuff "$command & echo \$! >$SERVICE_DIR/$SCREEN_NAME/${service}.pid; fg || echo \"$service failed to start\" | tee \"$SERVICE_DIR/$SCREEN_NAME/${service}.failure\"$NL"
     fi
@@ -1336,6 +1443,14 @@ function get_python_exec_prefix {
     fi
 }
 
+function get_install_prefix() {
+    if is_freebsd; then
+        echo "/usr/local"
+    else
+        echo ""
+    fi
+}
+
 # Wrapper for ``pip install`` to set cache and proxy environment variables
 # Uses globals ``OFFLINE``, ``PIP_DOWNLOAD_CACHE``, ``PIP_USE_MIRRORS``,
 # ``TRACK_DEPENDS``, ``*_proxy``
@@ -1374,8 +1489,13 @@ function pip_install {
     # 1.1, the existing extracted build will be used and cause
     # confusing errors.  By creating unique build directories we avoid
     # this problem. See https://github.com/pypa/pip/issues/709
-    local pip_build_tmp=$(mktemp --tmpdir -d pip-build.XXXXX)
+    if is_freebsd; then
+        local pip_build_tmp=$(mktemp -d pip-build.XXXXX)
+    else
+        local pip_build_tmp=$(mktemp --tmpdir -d pip-build.XXXXX)
+    fi
 
+    
     $xtrace
     $SUDO_PIP PIP_DOWNLOAD_CACHE=${PIP_DOWNLOAD_CACHE:-/var/cache/pip} \
         HTTP_PROXY=$http_proxy \
@@ -1445,12 +1565,13 @@ function setup_package_with_req_sync {
     # Don't update repo if local changes exist
     # Don't use buggy "git diff --quiet"
     # ``errexit`` requires us to trap the exit code when the repo is changed
-    local update_requirements=$(cd $project_dir && git diff --exit-code >/dev/null || echo "changed")
+    # Dynavisor: disable to reduce number of automatically updating changes
+    #local update_requirements=$(cd $project_dir && git diff --exit-code >/dev/null || echo "changed")
 
-    if [[ $update_requirements != "changed" ]]; then
-        (cd $REQUIREMENTS_DIR; \
-            $SUDO_CMD python update.py $project_dir)
-    fi
+    #if [[ $update_requirements != "changed" ]]; then
+    #    (cd $REQUIREMENTS_DIR; \
+    #        $SUDO_CMD python update.py $project_dir)
+    #fi
 
     setup_package $project_dir $flags
 
@@ -1462,11 +1583,12 @@ function setup_package_with_req_sync {
     # where we really really want the overridden version to stick. So provide
     # a variable that tells us whether or not we should UNDO the requirements
     # changes (this will be set to False in the OpenStack ci gate)
-    if [ $UNDO_REQUIREMENTS = "True" ]; then
-        if [[ $update_requirements != "changed" ]]; then
-            (cd $project_dir && git reset --hard)
-        fi
-    fi
+    # Dynavisor: disable to stop git from restting
+    #if [ $UNDO_REQUIREMENTS = "True" ]; then
+    #    if [[ $update_requirements != "changed" ]]; then
+    #        (cd $project_dir && git reset --hard)
+    #    fi
+    #fi
 }
 
 # ``pip install -e`` the package, which processes the dependencies
@@ -1480,7 +1602,9 @@ function setup_package {
     pip_install $flags $project_dir
     # ensure that further actions can do things like setup.py sdist
     if [[ "$flags" == "-e" ]]; then
-        safe_chown -R $STACK_USER $1/*.egg-info
+	# Dynavisor: since we're preinstalling all the python packages, we'll disable the following line
+        # safe_chown -R $STACK_USER $1/*.egg-info
+	:
     fi
 }
 
@@ -1696,8 +1820,10 @@ function add_user_to_group {
         GetOSVersion
     fi
 
+    if is_freebsd; then
+        sudo pw groupmod "$group" -m "$user"
     # SLE11 and openSUSE 12.2 don't have the usual usermod
-    if ! is_suse || [[ "$os_VENDOR" = "openSUSE" && "$os_RELEASE" != "12.2" ]]; then
+    elif ! is_suse || [[ "$os_VENDOR" = "openSUSE" && "$os_RELEASE" != "12.2" ]]; then
         sudo usermod -a -G "$group" "$user"
     else
         sudo usermod -A "$group" "$user"
@@ -1743,6 +1869,10 @@ function export_proxy_variables {
 
 # Returns true if the directory is on a filesystem mounted via NFS.
 function is_nfs_directory {
+    if is_freebsd; then
+        (df -t nfs "$@" > /dev/null 2> /dev/null)
+        return $?
+    fi    
     local mount_type=`stat -f -L -c %T $1`
     test "$mount_type" == "nfs"
 }
@@ -1763,6 +1893,8 @@ function maskip {
 function restart_service {
     if is_ubuntu; then
         sudo /usr/sbin/service $1 restart
+    elif is_freebsd; then
+        sudo /usr/sbin/service $1 onerestart	
     else
         sudo /sbin/service $1 restart
     fi
@@ -1785,6 +1917,10 @@ function safe_chown {
 function start_service {
     if is_ubuntu; then
         sudo /usr/sbin/service $1 start
+    elif is_freebsd; then
+        if ! sudo service $1 status; then
+             sudo /usr/sbin/service $1 start
+        fi	
     else
         sudo /sbin/service $1 start
     fi
@@ -1795,11 +1931,19 @@ function start_service {
 function stop_service {
     if is_ubuntu; then
         sudo /usr/sbin/service $1 stop
+    elif is_freebsd; then
+        sudo /usr/sbin/service $1 stop	
     else
         sudo /sbin/service $1 stop
     fi
 }
 
+# set rc.conf for freebsd
+function rc_add() {
+    local service=$1
+    local option=$2
+    grep -q "$service="\"$option\" /etc/rc.conf || sudo sh -c "echo $service=\\\"$option\\\" >> /etc/rc.conf"
+}
 
 # Restore xtrace
 $XTRACE

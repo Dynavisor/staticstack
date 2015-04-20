@@ -35,30 +35,6 @@ source $TOP_DIR/functions
 
 FILES=$TOP_DIR/files
 
-# Keystone Port Reservation
-# -------------------------
-# Reserve and prevent $KEYSTONE_AUTH_PORT and $KEYSTONE_AUTH_PORT_INT from
-# being used as ephemeral ports by the system. The default(s) are 35357 and
-# 35358 which are in the Linux defined ephemeral port range (in disagreement
-# with the IANA ephemeral port range). This is a workaround for bug #1253482
-# where Keystone will try and bind to the port and the port will already be
-# in use as an ephemeral port by another process. This places an explicit
-# exception into the Kernel for the Keystone AUTH ports.
-keystone_ports=${KEYSTONE_AUTH_PORT:-35357},${KEYSTONE_AUTH_PORT_INT:-35358}
-
-# Get any currently reserved ports, strip off leading whitespace
-reserved_ports=$(sysctl net.ipv4.ip_local_reserved_ports | awk -F'=' '{print $2;}' | sed 's/^ //')
-
-if [[ -z "${reserved_ports}" ]]; then
-    # If there are no currently reserved ports, reserve the keystone ports
-    sudo sysctl -w net.ipv4.ip_local_reserved_ports=${keystone_ports}
-else
-    # If there are currently reserved ports, keep those and also reserve the
-    # keystone specific ports. Duplicate reservations are merged into a single
-    # reservation (or range) automatically by the kernel.
-    sudo sysctl -w net.ipv4.ip_local_reserved_ports=${keystone_ports},${reserved_ports}
-fi
-
 
 # Python Packages
 # ---------------
@@ -75,7 +51,7 @@ function get_package_path {
 
 # Fix prettytable 0.7.2 permissions
 # Don't specify --upgrade so we use the existing package if present
-pip_install 'prettytable>=0.7'
+#pip_install 'prettytable>0.7'
 PACKAGE_DIR=$(get_package_path prettytable)
 # Only fix version 0.7.2
 dir=$(echo $PACKAGE_DIR/prettytable-0.7.2*)
@@ -85,12 +61,33 @@ fi
 
 # Fix httplib2 0.8 permissions
 # Don't specify --upgrade so we use the existing package if present
-pip_install httplib2
+# pip_install httplib2
 PACKAGE_DIR=$(get_package_path httplib2)
 # Only fix version 0.8
 dir=$(echo $PACKAGE_DIR-0.8*)
 if [[ -d $dir ]]; then
     sudo chmod +r $dir/*
+fi
+
+# FreeBSD
+# -------
+if is_freebsd; then
+    # Fixup timeout on FreeBSD, since it is called gtimeout instead
+    if [ ! -f /usr/local/bin/timeout ]; then
+        sudo ln -s /usr/local/bin/gtimeout /usr/local/bin/timeout
+    fi
+
+    # true is in different location
+    if [ ! -f /bin/true ]; then
+        sudo ln -s /usr/bin/true /bin/true
+    fi
+
+    # (freeze) sudo pip install -U setuptools
+    # (freeze) sudo pip install -U lesscpy==0.9j
+    sudo ln -sf /usr/local/bin/lesscpy /usr/bin/lesscpy
+    sudo kldload -n nmdm
+    # dynavisor insurance
+    # (freeze) sudo pip install --force-reinstall MySQL-python
 fi
 
 # Ubuntu 12.04

@@ -37,6 +37,9 @@ elif is_fedora; then
 elif is_suse; then
     APACHE_NAME=apache2
     APACHE_CONF_DIR=vhosts.d
+elif is_freebsd; then
+    APACHE_NAME=apache24
+    APACHE_CONF_DIR=
 fi
 
 # Functions
@@ -73,6 +76,9 @@ function install_apache_wsgi {
         install_package apache2 apache2-mod_wsgi
         # WSGI isn't enabled by default, enable it
         sudo a2enmod wsgi
+    elif is_freebsd; then
+	# install_package apache24 ap24-mod_wsgi3
+	rc_add apache24_enable YES
     else
         exit_distro_not_supported "apache installation"
     fi

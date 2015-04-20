@@ -20,7 +20,7 @@ set +o xtrace
 
 # Defaults
 # --------
-GITDIR["pbr"]=$DEST/pbr
+PBR_DIR=$DEST/pbr
 REQUIREMENTS_DIR=$DEST/requirements
 
 # Entry Points
@@ -31,10 +31,10 @@ function unfubar_setuptools {
     # this is a giant game of who's on first, but it does consistently work
     # there is hope that upstream python packaging fixes this in the future
     echo_summary "Unbreaking setuptools"
-    pip_install -U "setuptools<8.0"
+    pip_install -U setuptools
     pip_install -U pip
     uninstall_package python-setuptools
-    pip_install -U "setuptools<8.0"
+    pip_install -U setuptools
     pip_install -U pip
 }
 
@@ -45,12 +45,8 @@ function install_infra {
     git_clone $REQUIREMENTS_REPO $REQUIREMENTS_DIR $REQUIREMENTS_BRANCH
 
     # Install pbr
-    if use_library_from_git "pbr"; then
-        git_clone_by_name "pbr"
-        setup_lib "pbr"
-    else
-        pip_install "pbr"
-    fi
+    git_clone $PBR_REPO $PBR_DIR $PBR_BRANCH
+    setup_install $PBR_DIR
 }
 
 # Restore xtrace

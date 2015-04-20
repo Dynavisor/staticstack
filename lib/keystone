@@ -127,6 +127,57 @@ function _config_keystone_apache_wsgi {
     enable_apache_site keystone
 }
 
+# configure_keystone_less() - minimum openstack configuration
+function configure_keystone_less {
+    if [[ ! -d $KEYSTONE_CONF_DIR ]]; then
+        sudo mkdir -p $KEYSTONE_CONF_DIR
+    fi
+    sudo chown $STACK_USER $KEYSTONE_CONF_DIR
+
+    if [[ "$KEYSTONE_CONF_DIR" != "$KEYSTONE_DIR/etc" ]]; then
+        cp -p $KEYSTONE_DIR/etc/keystone.conf.sample $KEYSTONE_CONF
+        chmod 600 $KEYSTONE_CONF
+        cp -p $KEYSTONE_DIR/etc/policy.json $KEYSTONE_CONF_DIR
+        if [[ -f "$KEYSTONE_DIR/etc/keystone-paste.ini" ]]; then
+            cp -p "$KEYSTONE_DIR/etc/keystone-paste.ini" "$KEYSTONE_PASTE_INI"
+        fi
+    fi
+    if [[ -f "$KEYSTONE_PASTE_INI" ]]; then
+        iniset "$KEYSTONE_CONF" paste_deploy config_file "$KEYSTONE_PASTE_INI"
+    else
+        # compatibility with mixed cfg and paste.deploy configuration
+        KEYSTONE_PASTE_INI="$KEYSTONE_CONF"
+    fi
+
+    # Rewrite stock ``keystone.conf``
+    # Only provide basic openstack ubuntu manual automated configuration
+    # a. Service token
+    iniset $KEYSTONE_CONF DEFAULT admin_token "$SERVICE_TOKEN"
+    # b. configure database access
+    iniset $KEYSTONE_CONF database connection `database_connection_url keystone`
+    # c. configure UUID
+    iniset $KEYSTONE_CONF token provider keystone.token.providers.uuid.Provider
+    iniset $KEYSTONE_CONF token driver keystone.token.backends.sql.Token
+    # d. enable verbose logging
+    iniset $KEYSTONE_CONF DEFAULT verbose True
+    
+    # Set up logging
+    if [ "$SYSLOG" != "False" ]; then
+        iniset $KEYSTONE_CONF DEFAULT use_syslog "True"
+    fi
+
+    # Format logging
+    if [ "$LOG_COLOR" == "True" ] && [ "$SYSLOG" == "False" ]; then
+        setup_colorized_logging $KEYSTONE_CONF DEFAULT
+    fi
+
+    if is_apache_enabled_service key; then
+        _config_keystone_apache_wsgi
+    fi
+
+}
+
+
 # configure_keystone() - Set config files, create data dirs, etc
 function configure_keystone {
     if [[ ! -d $KEYSTONE_CONF_DIR ]]; then
@@ -400,7 +451,11 @@ function install_keystoneclient {
     if use_library_from_git "python-keystoneclient"; then
         git_clone_by_name "python-keystoneclient"
         setup_dev_lib "python-keystoneclient"
-        sudo install -D -m 0644 -o $STACK_USER {${GITDIR["python-keystoneclient"]}/tools/,/etc/bash_completion.d/}keystone.bash_completion
+
+	local inst_file='keystone.bash_completion'
+	local inst_src=$KEYSTONECLIENT_DIR/tools/$inst_file
+	local inst_dst=$INSTALL_PREFIX/etc/bash_completion.d/$inst_file
+	host_install $inst_src $inst_dst
     fi
 }
 
@@ -425,6 +480,8 @@ function install_keystone {
         install_package memcached
         if is_ubuntu; then
             install_package python-memcache
+	elif is_freebsd; then
+	    install_package py27-memcached
         else
             install_package python-memcached
         fi

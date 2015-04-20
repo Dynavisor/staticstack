@@ -130,8 +130,12 @@ function is_swift_enabled {
 # cleanup_swift() - Remove residual data files
 function cleanup_swift {
     rm -f ${SWIFT_CONF_DIR}{*.builder,*.ring.gz,backups/*.builder,backups/*.ring.gz}
-    if egrep -q ${SWIFT_DATA_DIR}/drives/sdb1 /proc/mounts; then
-        sudo umount ${SWIFT_DATA_DIR}/drives/sdb1
+    if ! is_freebsd; then
+	if egrep -q ${SWIFT_DATA_DIR}/drives/sdb1 /proc/mounts; then
+            sudo umount ${SWIFT_DATA_DIR}/drives/sdb1
+	fi
+    else
+	sudo umount ${SWIFT_DATA_DIR}/drives/sdb1
     fi
     if [[ -e ${SWIFT_DISK_IMAGE} ]]; then
         rm ${SWIFT_DISK_IMAGE}
@@ -359,8 +363,13 @@ function configure_swift {
         swift_pipeline+=" swift3 s3token "
     fi
     swift_pipeline+=" authtoken keystoneauth tempauth "
-    sed -i "/^pipeline/ { s/tempauth/${swift_pipeline} ${SWIFT_EXTRAS_MIDDLEWARE}/ ;}" ${SWIFT_CONFIG_PROXY_SERVER}
-    sed -i "/^pipeline/ { s/proxy-server/${SWIFT_EXTRAS_MIDDLEWARE_LAST} proxy-server/ ; }" ${SWIFT_CONFIG_PROXY_SERVER}
+    if ! is_freebsd; then
+	sed -i "/^pipeline/ { s/tempauth/${swift_pipeline} ${SWIFT_EXTRAS_MIDDLEWARE}/ ;}" ${SWIFT_CONFIG_PROXY_SERVER}
+	sed -i "/^pipeline/ { s/proxy-server/${SWIFT_EXTRAS_MIDDLEWARE_LAST} proxy-server/ ; }" ${SWIFT_CONFIG_PROXY_SERVER}
+    else
+	sed -i '' "/^pipeline/ { s/tempauth/${swift_pipeline} ${SWIFT_EXTRAS_MIDDLEWARE}/ ;}" ${SWIFT_CONFIG_PROXY_SERVER}
+	sed -i '' "/^pipeline/ { s/proxy-server/${SWIFT_EXTRAS_MIDDLEWARE_LAST} proxy-server/ ; }" ${SWIFT_CONFIG_PROXY_SERVER}
+    fi
 
     iniuncomment ${SWIFT_CONFIG_PROXY_SERVER} filter:tempauth account_autocreate
     iniset ${SWIFT_CONFIG_PROXY_SERVER} app:proxy-server account_autocreate true
@@ -372,7 +381,11 @@ function configure_swift {
     iniset ${SWIFT_CONFIG_PROXY_SERVER} filter:crossdomain use "egg:swift#crossdomain"
 
     # Configure Keystone
-    sed -i '/^# \[filter:authtoken\]/,/^# \[filter:keystoneauth\]$/ s/^#[ \t]*//' ${SWIFT_CONFIG_PROXY_SERVER}
+    if ! is_freebsd; then
+	sed -i '/^# \[filter:authtoken\]/,/^# \[filter:keystoneauth\]$/ s/^#[ \t]*//' ${SWIFT_CONFIG_PROXY_SERVER}
+    else
+	sed -i '' '/^# \[filter:authtoken\]/,/^# \[filter:keystoneauth\]$/ s/^#[ \t]*//' ${SWIFT_CONFIG_PROXY_SERVER}	
+    fi
     iniset ${SWIFT_CONFIG_PROXY_SERVER} filter:authtoken auth_host $KEYSTONE_AUTH_HOST
     iniset ${SWIFT_CONFIG_PROXY_SERVER} filter:authtoken auth_port $KEYSTONE_AUTH_PORT
     iniset ${SWIFT_CONFIG_PROXY_SERVER} filter:authtoken auth_protocol $KEYSTONE_AUTH_PROTOCOL
@@ -459,13 +472,21 @@ EOF
     swift_log_dir=${SWIFT_DATA_DIR}/logs
     rm -rf ${swift_log_dir}
     mkdir -p ${swift_log_dir}/hourly
-    sudo chown -R ${STACK_USER}:adm ${swift_log_dir}
-
-    if [[ $SYSLOG != "False" ]]; then
-        sed "s,%SWIFT_LOGDIR%,${swift_log_dir}," $FILES/swift/rsyslog.conf | sudo \
-            tee /etc/rsyslog.d/10-swift.conf
-        # restart syslog to take the changes
-        sudo killall -HUP rsyslogd
+    if ! is_freebsd; then
+	sudo chown -R ${STACK_USER}:adm ${swift_log_dir}
+    else
+	sudo chown -R ${STACK_USER}:${STACK_USER} ${swift_log_dir}
+    fi
+    if ! is_freebsd; then
+	if [[ $SYSLOG != "False" ]]; then
+	    sed "s,%SWIFT_LOGDIR%,${swift_log_dir}," $FILES/swift/rsyslog.conf | sudo \
+										     tee /etc/rsyslog.d/10-swift.conf
+	    # restart syslog to take the changes
+	sudo killall -HUP rsyslogd
+	fi
+    else
+	# TODO: POC without rsyslogd
+	:
     fi
 
     if is_apache_enabled_service swift; then
@@ -498,15 +519,19 @@ function create_swift_disk {
 
     truncate -s ${SWIFT_LOOPBACK_DISK_SIZE} ${SWIFT_DISK_IMAGE}
 
+    # Dynavisor: FreeBSD/XFS support? Temporarily disable
     # Make a fresh XFS filesystem
-    /sbin/mkfs.xfs -f -i size=1024  ${SWIFT_DISK_IMAGE}
+#    /sbin/mkfs.xfs -f -i size=1024  ${SWIFT_DISK_IMAGE}
 
     # Mount the disk with mount options to make it as efficient as possible
     mkdir -p ${SWIFT_DATA_DIR}/drives/sdb1
-    if ! egrep -q ${SWIFT_DATA_DIR}/drives/sdb1 /proc/mounts; then
-        sudo mount -t xfs -o loop,noatime,nodiratime,nobarrier,logbufs=8  \
-            ${SWIFT_DISK_IMAGE} ${SWIFT_DATA_DIR}/drives/sdb1
-    fi
+#    if ! egrep -q ${SWIFT_DATA_DIR}/drives/sdb1 /proc/mounts; then
+#        sudo mount -t xfs -o loop,noatime,nodiratime,nobarrier,logbufs=8  \
+#            ${SWIFT_DISK_IMAGE} ${SWIFT_DATA_DIR}/drives/sdb1
+#    fi
+
+    # Make a fresh ufs file system and mount it
+    sudo mdmfs -F ${SWIFT_DISK_IMAGE} md ${SWIFT_DATA_DIR}/drives/sdb1
 
     # Create a link to the above mount and
     # create all of the directories needed to emulate a few different servers

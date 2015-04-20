@@ -38,17 +38,36 @@ is_package_installed sudo || install_package sudo
 
 if ! getent group $STACK_USER >/dev/null; then
     echo "Creating a group called $STACK_USER"
-    groupadd $STACK_USER
+    if is_freebsd; then
+        pw groupadd $STACK_USER
+    else
+        groupadd $STACK_USER
+    fi
 fi
 
 if ! getent passwd $STACK_USER >/dev/null; then
     echo "Creating a user called $STACK_USER"
-    useradd -g $STACK_USER -s /bin/bash -d $DEST -m $STACK_USER
+    if is_freebsd; then
+        echo $STACK_USER_PASSWORD | \
+        pw useradd -h 0 -n $STACK_USER -c "Devstack" -g $STACK_USER -s /bin/bash -d $DEST -m
+    else
+        useradd -g $STACK_USER -s /bin/bash -d $DEST -m $STACK_USER
+    fi
 fi
 
 echo "Giving stack user passwordless sudo privileges"
+SUDOERS_ETC_FILE="$INSTALL_PREFIX/etc/sudoers"
+SUDOERS_STACK_FILE="$INSTALL_PREFIX/etc/sudoers.d/50_stack_sh"
+
 # UEC images ``/etc/sudoers`` does not have a ``#includedir``, add one
-grep -q "^#includedir.*/etc/sudoers.d" /etc/sudoers ||
-    echo "#includedir /etc/sudoers.d" >> /etc/sudoers
-( umask 226 && echo "$STACK_USER ALL=(ALL) NOPASSWD:ALL" \
-    > /etc/sudoers.d/50_stack_sh )
+grep -q "^#includedir.*$INSTALL_PREFIX/etc/sudoers.d" $SUDOERS_ETC_FILE ||
+    echo "#includedir $INSTALL_PREFIX/etc/sudoers.d" >> $SUDOERS_ETC_FILE
+( umask 226 && echo "$STACK_USER ALL=(ALL:ALL) NOPASSWD:ALL" \
+    > $SUDOERS_STACK_FILE )
+
+# Some binaries might be under /sbin or /usr/sbin, so make sure sudo will
+# see them by forcing PATH
+echo "Defaults:$STACK_USER secure_path=/sbin:/usr/sbin:/usr/bin:/bin:/usr/local/sbin:/usr/local/bin" >> $SUDOERS_STACK_FILE
+if is_freebsd; then
+    echo "Defaults:$STACK_USER env_keep=CPATH" >> $SUDOERS_STACK_FILE
+fi

@@ -56,7 +56,13 @@ function upload_image {
     IMAGE_FNAME=`basename "$image_url"`
     if [[ $image_url != file* ]]; then
         # Downloads the image (uec ami+akistyle), then extracts it.
-        if [[ ! -f $FILES/$IMAGE_FNAME || "$(stat -c "%s" $FILES/$IMAGE_FNAME)" = "0" ]]; then
+        local statc
+        #if ! is_freebsd; then
+        #     statc=$(stat -c "%s" $FILES/$IMAGE_FNAME)
+        #else
+        #     statc=$(stat -q -f %z $FILES/$IMAGE_FNAME)
+        #fi
+        if [[ ! -f $FILES/$IMAGE_FNAME ]]; then
             wget -c $image_url -O $FILES/$IMAGE_FNAME
             if [[ $? -ne 0 ]]; then
                 echo "Not found: $image_url"
@@ -446,7 +452,14 @@ function check_path_perm_sanity {
     for i in $(echo ${real_path} | tr "/" " "); do
         rebuilt_path=$rebuilt_path"/"$i
 
-        if [[ $(stat -c '%a' ${rebuilt_path}) = 700 ]]; then
+        local statperm=""
+        if is_freebsd; then
+            statperm="$(stat -f "%p" ${rebuilt_path})"
+            statperm="${statperm: -3}"
+        else
+            statperm="$(stat -c '%a' ${rebuilt_path})"
+        fi
+        if [[ $statperm = 700 ]]; then
             echo "*** DEST path element"
             echo "***    ${rebuilt_path}"
             echo "*** appears to have 0700 permissions."

@@ -53,7 +53,10 @@ $0 -P -C mytenant -u myuser -p mypass
 EOF
 }
 
-if ! options=$(getopt -o hPAp:u:r:C: -l os-username:,os-password:,os-tenant-name:,os-tenant-id:,os-auth-url:,target-dir:,skip-tenant:,os-cacert:,help,debug -- "$@"); then
+#if ! options=$(getopt -o hPAp:u:r:C: -l os-username:,os-password:,os-tenant-name:,os-tenant-id:,os-auth-url:,target-dir:,skip-tenant:,os-cacert:,help,debug -- "$@")
+if ! options=$(/usr/local/bin/getopt -o hPAp:u:r:C: -l os-username:,os-password:,os-tenant-name:,os-tenant-id:,os-auth-url:,target-dir:,skip-tenant:,os-cacert:,help,debug -- $*)
+then
+    #parse error
     display_help
     exit 1
 fi

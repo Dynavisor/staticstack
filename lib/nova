@@ -29,16 +29,14 @@ set +o xtrace
 # --------
 
 # Set up default directories
-GITDIR["python-novaclient"]=$DEST/python-novaclient
-
-
 NOVA_DIR=$DEST/nova
+NOVACLIENT_DIR=$DEST/python-novaclient
 NOVA_STATE_PATH=${NOVA_STATE_PATH:=$DATA_DIR/nova}
 # INSTANCES_PATH is the previous name for this
 NOVA_INSTANCES_PATH=${NOVA_INSTANCES_PATH:=${INSTANCES_PATH:=$NOVA_STATE_PATH/instances}}
 NOVA_AUTH_CACHE_DIR=${NOVA_AUTH_CACHE_DIR:-/var/cache/nova}
 
-NOVA_CONF_DIR=/etc/nova
+NOVA_CONF_DIR=${NOVA_CONF_DIR:-$INSTALL_PREFIX/etc/nova}
 NOVA_CONF=$NOVA_CONF_DIR/nova.conf
 NOVA_CELLS_CONF=$NOVA_CONF_DIR/nova-cells.conf
 NOVA_FAKE_CONF=$NOVA_CONF_DIR/nova-fake.conf
@@ -74,22 +72,12 @@ FORCE_CONFIG_DRIVE=${FORCE_CONFIG_DRIVE:-"always"}
 # should work in most cases.
 SCHEDULER=${SCHEDULER:-nova.scheduler.filter_scheduler.FilterScheduler}
 
-QEMU_CONF=/etc/libvirt/qemu.conf
+QEMU_CONF=$INSTALL_PREFIX/etc/libvirt/qemu.conf
 
 # Set default defaults here as some hypervisor drivers override these
-PUBLIC_INTERFACE_DEFAULT=br100
-FLAT_NETWORK_BRIDGE_DEFAULT=br100
-# set the GUEST_INTERFACE_DEFAULT to some interface on the box so that
-# the default isn't completely crazy. This will match eth*, em*, or
-# the new p* interfaces, then basically picks the first
-# alphabetically. It's probably wrong, however it's less wrong than
-# always using 'eth0' which doesn't exist on new Linux distros at all.
-GUEST_INTERFACE_DEFAULT=$(ip link \
-    | grep 'state UP' \
-    | awk '{print $2}' \
-    | sed 's/://' \
-    | grep ^[ep] \
-    | head -1)
+PUBLIC_INTERFACE_DEFAULT=${PUBLIC_INTERFACE_DEFAULT:-br100}
+GUEST_INTERFACE_DEFAULT=${GUEST_INTERFACE_DEFAULT:-eth0}
+FLAT_NETWORK_BRIDGE_DEFAULT=${FLAT_NETWORK_BRIDGE_DEFAULT:-br100}
 
 # Get hypervisor configuration
 # ----------------------------
@@ -172,25 +160,29 @@ function clean_iptables {
 # runs that a clean run would need to clean up
 function cleanup_nova {
     if is_service_enabled n-cpu; then
-        # Clean iptables from previous runs
-        clean_iptables
+        # TODO this needs to be done in a BSD fashion
+        if ! is_freebsd; then
+            # Clean iptables from previous runs
+            clean_iptables
 
-        # Destroy old instances
-        instances=`sudo virsh list --all | grep $INSTANCE_NAME_PREFIX | sed "s/.*\($INSTANCE_NAME_PREFIX[0-9a-fA-F]*\).*/\1/g"`
-        if [ ! "$instances" = "" ]; then
-            echo $instances | xargs -n1 sudo virsh destroy || true
-            echo $instances | xargs -n1 sudo virsh undefine --managed-save || true
+            # Destroy old instances
+            instances=`sudo virsh list --all | grep $INSTANCE_NAME_PREFIX | sed "s/.*\($INSTANCE_NAME_PREFIX[0-9a-fA-F]*\).*/\1/g"`
+            if [ ! "$instances" = "" ]; then
+                echo $instances | xargs -n1 sudo virsh destroy || true
+                echo $instances | xargs -n1 sudo virsh undefine --managed-save || true
+            fi
+
+            # Logout and delete iscsi sessions
+            tgts=$(sudo iscsiadm --mode node | grep $VOLUME_NAME_PREFIX | cut -d ' ' -f2)
+            for target in $tgts; do
+                sudo iscsiadm --mode node -T $target --logout || true
+            done
+            sudo iscsiadm --mode node --op delete || true
         fi
-
-        # Logout and delete iscsi sessions
-        tgts=$(sudo iscsiadm --mode node | grep $VOLUME_NAME_PREFIX | cut -d ' ' -f2)
-        for target in $tgts; do
-            sudo iscsiadm --mode node -T $target --logout || true
-        done
-        sudo iscsiadm --mode node --op delete || true
 
         # Clean out the instances directory.
         sudo rm -rf $NOVA_INSTANCES_PATH/*
+        
     fi
 
     sudo rm -rf $NOVA_STATE_PATH $NOVA_AUTH_CACHE_DIR
@@ -205,6 +197,12 @@ function cleanup_nova {
 
 # configure_nova_rootwrap() - configure Nova's rootwrap
 function configure_nova_rootwrap {
+    local filters_dir="$NOVA_DIR/etc/nova/rootwrap.d"
+    local root_group="root"
+    if is_freebsd; then
+        filters_dir="$filters_dir/freebsd"
+        root_group="wheel"
+    fi
     # Deploy new rootwrap filters files (owned by root).
     # Wipe any existing rootwrap.d files first
     if [[ -d $NOVA_CONF_DIR/rootwrap.d ]]; then
@@ -212,13 +210,16 @@ function configure_nova_rootwrap {
     fi
     # Deploy filters to /etc/nova/rootwrap.d
     sudo mkdir -m 755 $NOVA_CONF_DIR/rootwrap.d
-    sudo cp $NOVA_DIR/etc/nova/rootwrap.d/*.filters $NOVA_CONF_DIR/rootwrap.d
-    sudo chown -R root:root $NOVA_CONF_DIR/rootwrap.d
+    sudo cp $filters_dir/*.filters $NOVA_CONF_DIR/rootwrap.d
+    sudo chown -R root:$root_group $NOVA_CONF_DIR/rootwrap.d
     sudo chmod 644 $NOVA_CONF_DIR/rootwrap.d/*
     # Set up rootwrap.conf, pointing to /etc/nova/rootwrap.d
     sudo cp $NOVA_DIR/etc/nova/rootwrap.conf $NOVA_CONF_DIR/
-    sudo sed -e "s:^filters_path=.*$:filters_path=$NOVA_CONF_DIR/rootwrap.d:" -i $NOVA_CONF_DIR/rootwrap.conf
-    sudo chown root:root $NOVA_CONF_DIR/rootwrap.conf
+    sudo sed -e "s:^filters_path=.*$:filters_path=$NOVA_CONF_DIR/rootwrap.d:" -i '' $NOVA_CONF_DIR/rootwrap.conf
+    if is_freebsd; then
+        sudo sed -e "/^exec_dirs=/ s:$:,/usr/local/bin,/usr/local/sbin:" -i '' $NOVA_CONF_DIR/rootwrap.conf
+    fi
+    sudo chown root:$root_group $NOVA_CONF_DIR/rootwrap.conf
     sudo chmod 0644 $NOVA_CONF_DIR/rootwrap.conf
     # Specify rootwrap.conf as first parameter to nova-rootwrap
     ROOTWRAP_SUDOER_CMD="$NOVA_ROOTWRAP $NOVA_CONF_DIR/rootwrap.conf *"
@@ -227,9 +228,127 @@ function configure_nova_rootwrap {
     TEMPFILE=`mktemp`
     echo "$STACK_USER ALL=(root) NOPASSWD: $ROOTWRAP_SUDOER_CMD" >$TEMPFILE
     chmod 0440 $TEMPFILE
-    sudo chown root:root $TEMPFILE
-    sudo mv $TEMPFILE /etc/sudoers.d/nova-rootwrap
+    sudo chown root:$root_group $TEMPFILE
+    sudo mv $TEMPFILE $INSTALL_PREFIX/etc/sudoers.d/nova-rootwrap
 }
+
+# configure_nova() - Set config files, create data dirs, etc
+function configure_nova_less {
+    # Put config files in ``/etc/nova`` for everyone to find
+    if [[ ! -d $NOVA_CONF_DIR ]]; then
+        sudo mkdir -p $NOVA_CONF_DIR
+    fi
+    sudo chown $STACK_USER $NOVA_CONF_DIR
+
+    cp -p $NOVA_DIR/etc/nova/policy.json $NOVA_CONF_DIR
+
+    configure_nova_rootwrap
+
+    if is_service_enabled n-api; then
+        # Remove legacy paste config if present
+        rm -f $NOVA_DIR/bin/nova-api-paste.ini
+
+        # Get the sample configuration file in place
+        cp $NOVA_DIR/etc/nova/api-paste.ini $NOVA_CONF_DIR
+
+        # Comment out the keystone configs in Nova's api-paste.ini.
+        # We are using nova.conf to configure this instead.
+        inicomment $NOVA_API_PASTE_INI filter:authtoken auth_host
+        inicomment $NOVA_API_PASTE_INI filter:authtoken auth_protocol
+        inicomment $NOVA_API_PASTE_INI filter:authtoken admin_tenant_name
+        inicomment $NOVA_API_PASTE_INI filter:authtoken cafile
+        inicomment $NOVA_API_PASTE_INI filter:authtoken admin_user
+        inicomment $NOVA_API_PASTE_INI filter:authtoken admin_password
+        inicomment $NOVA_API_PASTE_INI filter:authtoken signing_dir
+    fi
+
+    if is_service_enabled n-cpu; then
+        # Force IP forwarding on, just in case
+        if is_freebsd; then
+            sudo sysctl net.inet.ip.forwarding=1
+        else
+            sudo sysctl -w net.ipv4.ip_forward=1
+        fi
+
+        if [[ "$VIRT_DRIVER" = 'libvirt' ]]; then
+            if is_freebsd; then
+                sudo kldload -n if_tap if_bridge
+            fi
+
+            # Check for kvm (hardware based virtualization).  If unable to initialize
+            # kvm, we drop back to the slower emulation mode (qemu).  Note: many systems
+            # come with hardware virtualization disabled in BIOS.
+            if [[ "$LIBVIRT_TYPE" == "kvm" ]]; then
+                sudo modprobe kvm || true
+                if [ ! -e /dev/kvm ]; then
+                    echo "WARNING: Switching to QEMU"
+                    LIBVIRT_TYPE=qemu
+                    if which selinuxenabled 2>&1 > /dev/null && selinuxenabled; then
+                        # https://bugzilla.redhat.com/show_bug.cgi?id=753589
+                        sudo setsebool virt_use_execmem on
+                    fi
+                fi
+            fi
+
+            if [[ "$LIBVIRT_TYPE" == "bhyve" ]]; then
+                sudo kldload -n vmm
+                if [ $? -ne 0 ]; then
+                    echo "WARNING: Switching to QEMU"
+                    LIBVIRT_TYPE=qemu
+                fi
+            fi
+
+            # Install and configure **LXC** if specified.  LXC is another approach to
+            # splitting a system into many smaller parts.  LXC uses cgroups and chroot
+            # to simulate multiple systems.
+            if [[ "$LIBVIRT_TYPE" == "lxc" ]]; then
+                if is_ubuntu; then
+                    if [[ ! "$DISTRO" > natty ]]; then
+                        cgline="none /cgroup cgroup cpuacct,memory,devices,cpu,freezer,blkio 0 0"
+                        sudo mkdir -p /cgroup
+                        if ! grep -q cgroup /etc/fstab; then
+                            echo "$cgline" | sudo tee -a /etc/fstab
+                        fi
+                        if ! mount -n | grep -q cgroup; then
+                            sudo mount /cgroup
+                        fi
+                    fi
+                fi
+            fi
+        fi
+
+        # Instance Storage
+        # ----------------
+
+        # Nova stores each instance in its own directory.
+        sudo mkdir -p $NOVA_INSTANCES_PATH
+        sudo chown -R $STACK_USER $NOVA_INSTANCES_PATH
+
+        if ! is_freebsd; then
+            # You can specify a different disk to be mounted and used for backing the
+            # virtual machines.  If there is a partition labeled nova-instances we
+            # mount it (ext filesystems can be labeled via e2label).
+            if [ -L /dev/disk/by-label/nova-instances ]; then
+                if ! mount -n | grep -q $NOVA_INSTANCES_PATH; then
+                    sudo mount -L nova-instances $NOVA_INSTANCES_PATH
+                    sudo chown -R $STACK_USER $NOVA_INSTANCES_PATH
+                fi
+            fi
+        fi
+    fi
+
+    # Rebuild the config file from scratch
+    create_nova_conf
+    if is_service_enabled n-cpu; then
+	create_nova_conf_compute_less
+    fi
+
+    if is_service_enabled n-cpu && [[ -r $NOVA_PLUGINS/hypervisor-$VIRT_DRIVER ]]; then
+        # Configure hypervisor plugin
+        configure_nova_hypervisor
+    fi
+}
+
 
 # configure_nova() - Set config files, create data dirs, etc
 function configure_nova {
@@ -262,10 +381,18 @@ function configure_nova {
     fi
 
     if is_service_enabled n-cpu; then
-        # Force IP forwarding on, just on case
-        sudo sysctl -w net.ipv4.ip_forward=1
+        # Force IP forwarding on, just in case
+        if is_freebsd; then
+            sudo sysctl net.inet.ip.forwarding=1
+        else
+            sudo sysctl -w net.ipv4.ip_forward=1
+        fi
 
         if [[ "$VIRT_DRIVER" = 'libvirt' ]]; then
+            if is_freebsd; then
+                sudo kldload -n if_tap if_bridge
+            fi
+
             # Check for kvm (hardware based virtualization).  If unable to initialize
             # kvm, we drop back to the slower emulation mode (qemu).  Note: many systems
             # come with hardware virtualization disabled in BIOS.
@@ -278,6 +405,14 @@ function configure_nova {
                         # https://bugzilla.redhat.com/show_bug.cgi?id=753589
                         sudo setsebool virt_use_execmem on
                     fi
+                fi
+            fi
+
+            if [[ "$LIBVIRT_TYPE" == "bhyve" ]]; then
+                sudo kldload -n vmm
+                if [ $? -ne 0 ]; then
+                    echo "WARNING: Switching to QEMU"
+                    LIBVIRT_TYPE=qemu
                 fi
             fi
 
@@ -307,13 +442,15 @@ function configure_nova {
         sudo mkdir -p $NOVA_INSTANCES_PATH
         sudo chown -R $STACK_USER $NOVA_INSTANCES_PATH
 
-        # You can specify a different disk to be mounted and used for backing the
-        # virtual machines.  If there is a partition labeled nova-instances we
-        # mount it (ext filesystems can be labeled via e2label).
-        if [ -L /dev/disk/by-label/nova-instances ]; then
-            if ! mount -n | grep -q $NOVA_INSTANCES_PATH; then
-                sudo mount -L nova-instances $NOVA_INSTANCES_PATH
-                sudo chown -R $STACK_USER $NOVA_INSTANCES_PATH
+        if ! is_freebsd; then
+            # You can specify a different disk to be mounted and used for backing the
+            # virtual machines.  If there is a partition labeled nova-instances we
+            # mount it (ext filesystems can be labeled via e2label).
+            if [ -L /dev/disk/by-label/nova-instances ]; then
+                if ! mount -n | grep -q $NOVA_INSTANCES_PATH; then
+                    sudo mount -L nova-instances $NOVA_INSTANCES_PATH
+                    sudo chown -R $STACK_USER $NOVA_INSTANCES_PATH
+                fi
             fi
         fi
     fi
@@ -421,6 +558,82 @@ create_nova_accounts() {
     fi
 }
 
+# create_nova_conf_less() - Create a new nova.conf file
+function create_nova_conf_less {
+    # Remove legacy ``nova.conf``
+    rm -f $NOVA_DIR/bin/nova.conf
+
+    # Edit ``nova.conf``
+    # a. configure database access
+    iniset $NOVA_CONF database connection `database_connection_url nova`
+    # b. default rabbitmq
+    iniset_rpc_backend nova $NOVA_CONF DEFAULT
+    # c. DEFAULT and keystone_authtoken sections
+    iniset $NOVA_CONF DEFAULT auth_strategy "keystone"
+    iniset $NOVA_CONF keystone_authtoken auth_host $KEYSTONE_AUTH_HOST
+    iniset $NOVA_CONF keystone_authtoken auth_port $KEYSTONE_AUTH_PORT
+    iniset $NOVA_CONF keystone_authtoken auth_protocol $KEYSTONE_AUTH_PROTOCOL
+    iniset $NOVA_CONF keystone_authtoken admin_tenant_name $SERVICE_TENANT_NAME
+    iniset $NOVA_CONF keystone_authtoken admin_user nova
+    iniset $NOVA_CONF keystone_authtoken admin_password $SERVICE_PASSWORD
+    # d. my_ip
+    iniset $NOVA_CONF DEFAULT my_ip "$HOST_IP"
+    # e. VNC
+    if is_service_enabled n-novnc || is_service_enabled n-xvnc; then
+        # Address on which instance vncservers will listen on compute hosts.
+        # For multi-host, this should be the management ip of the compute host.
+        VNCSERVER_LISTEN=${VNCSERVER_LISTEN=$HOST_IP}
+        VNCSERVER_PROXYCLIENT_ADDRESS=${VNCSERVER_PROXYCLIENT_ADDRESS=$HOST_IP}
+        iniset $NOVA_CONF DEFAULT vnc_enabled true
+        iniset $NOVA_CONF DEFAULT vncserver_listen "$VNCSERVER_LISTEN"
+        iniset $NOVA_CONF DEFAULT vncserver_proxyclient_address "$VNCSERVER_PROXYCLIENT_ADDRESS"
+    else
+        iniset $NOVA_CONF DEFAULT vnc_enabled false
+    fi
+    # f. glance
+    iniset $NOVA_CONF glance host "$SERVICE_HOST"
+    # g. verbose
+    iniset $NOVA_CONF DEFAULT verbose "True"
+}
+
+# create_nova_conf_compute_less() - Create a new nova.conf file for the compute node
+function create_nova_conf_compute_less {
+    # Remove legacy ``nova.conf``
+    rm -f $NOVA_DIR/bin/nova.conf
+
+    # a. default rabbitmq
+    iniset_rpc_backend nova $NOVA_CONF DEFAULT
+    # b. DEFAULT and keystone_authtoken sections
+    iniset $NOVA_CONF DEFAULT auth_strategy "keystone"
+    iniset $NOVA_CONF keystone_authtoken auth_host $KEYSTONE_AUTH_HOST
+    iniset $NOVA_CONF keystone_authtoken auth_port $KEYSTONE_AUTH_PORT
+    iniset $NOVA_CONF keystone_authtoken auth_protocol $KEYSTONE_AUTH_PROTOCOL
+    iniset $NOVA_CONF keystone_authtoken admin_tenant_name $SERVICE_TENANT_NAME
+    iniset $NOVA_CONF keystone_authtoken admin_user nova
+    iniset $NOVA_CONF keystone_authtoken admin_password $SERVICE_PASSWORD
+    # c. my_ip
+    iniset $NOVA_CONF DEFAULT my_ip "$HOST_IP"
+    # d. VNC
+    if is_service_enabled n-novnc || is_service_enabled n-xvnc; then
+        # Address on which instance vncservers will listen on compute hosts.
+        # For multi-host, this should be the management ip of the compute host.
+        VNCSERVER_LISTEN=${VNCSERVER_LISTEN=0.0.0.0}
+        VNCSERVER_PROXYCLIENT_ADDRESS=${VNCSERVER_PROXYCLIENT_ADDRESS=$SERVICE_HOST}
+        #iniset $NOVA_CONF DEFAULT vnc_enabled true
+        iniset $NOVA_CONF DEFAULT vncserver_listen "$VNCSERVER_LISTEN"
+        iniset $NOVA_CONF DEFAULT vncserver_proxyclient_address "$VNCSERVER_PROXYCLIENT_ADDRESS"
+	iniset $NOVA_CONF DEFAULT novncproxy_base_url "http://$SERVICE_HOST:6080/vnc_auto.html"
+    else
+        iniset $NOVA_CONF DEFAULT vnc_enabled false
+    fi
+    # e. glance
+    iniset $NOVA_CONF glance host "$SERVICE_HOST"
+    # f. verbose
+    iniset $NOVA_CONF DEFAULT verbose "True"
+}
+
+
+
 # create_nova_conf() - Create a new nova.conf file
 function create_nova_conf {
     # Remove legacy ``nova.conf``
@@ -455,6 +668,20 @@ function create_nova_conf {
         # nova defaults to /usr/local/bin, but fedora and suse pip like to
         # install things in /usr/bin
         iniset $NOVA_CONF DEFAULT bindir "/usr/bin"
+    fi
+
+    if is_freebsd; then
+        # FreeBSD specific settings
+        iniset $NOVA_CONF DEFAULT bindir "/usr/local/bin"
+        iniset $NOVA_CONF DEFAULT network_driver "nova.network.freebsd_net"
+        iniset $NOVA_CONF DEFAULT l3_lib "nova.network.l3.FreeBSDNetL3"
+
+        # XXX The dhcp_release is currently (2013.12) not available on
+        # FreeBSD, so we suppress it and also set a shorter timeout for
+        # reclaiming unused IPs by the system.
+        iniset $NOVA_CONF DEFAULT force_dhcp_release "False"
+        iniset $NOVA_CONF DEFAULT fixed_ip_disassocate_timeout "120"
+        iniset $NOVA_CONF DEFAULT fixed_range "$FIXED_RANGE"
     fi
 
     if is_service_enabled n-api; then
@@ -591,8 +818,8 @@ function init_nova_cells {
         fi
 
         $NOVA_BIN_DIR/nova-manage --config-file $NOVA_CELLS_CONF db sync
-        $NOVA_BIN_DIR/nova-manage --config-file $NOVA_CELLS_CONF cell create --name=region --cell_type=parent --username=$RABBIT_USERID --hostname=$RABBIT_HOST --port=5672 --password=$RABBIT_PASSWORD --virtual_host=/ --woffset=0 --wscale=1
-        $NOVA_BIN_DIR/nova-manage cell create --name=child --cell_type=child --username=$RABBIT_USERID --hostname=$RABBIT_HOST --port=5672 --password=$RABBIT_PASSWORD --virtual_host=child_cell --woffset=0 --wscale=1
+        $NOVA_BIN_DIR/nova-manage --config-file $NOVA_CELLS_CONF cell create --name=region --cell_type=parent --username=guest --hostname=$RABBIT_HOST --port=5672 --password=$RABBIT_PASSWORD --virtual_host=/ --woffset=0 --wscale=1
+        $NOVA_BIN_DIR/nova-manage cell create --name=child --cell_type=child --username=guest --hostname=$RABBIT_HOST --port=5672 --password=$RABBIT_PASSWORD --virtual_host=child_cell --woffset=0 --wscale=1
     fi
 }
 
@@ -613,6 +840,24 @@ function create_nova_conf_nova_network {
         iniset $NOVA_CONF DEFAULT flat_interface "$FLAT_INTERFACE"
     fi
 }
+
+function create_nova_conf_nova_network_less {
+    iniset $NOVA_CONF DEFAULT network_api_class  nova.network.api.API
+    iniset $NOVA_CONF DEFAULT security_group_api  nova
+    # firewall driver support not currently supported - partially done in freebsd network driver
+    iniset $NOVA_CONF DEFAULT network_manager  "nova.network.manager.$NETWORK_MANAGER"
+    iniset $NOVA_CONF DEFAULT network_size  254
+    iniset $NOVA_CONF DEFAULT allow_same_net_traffic  False
+    
+    iniset $NOVA_CONF DEFAULT multi_host "$MULTI_HOST"
+    iniset $NOVA_CONF DEFAULT send_arp_for_ha  True
+    iniset $NOVA_CONF DEFAULT share_dhcp_address  True
+    iniset $NOVA_CONF DEFAULT force_dhcp_release  True
+    iniset $NOVA_CONF DEFAULT flat_network_bridge  bridge0
+    iniset $NOVA_CONF DEFAULT flat_interface  "$FLAT_INTERFACE"
+    iniset $NOVA_CONF DEFAULT public_interface  "$PUBLIC_INTERFACE"
+}
+
 
 # create_nova_keys_dir() - Part of the init_nova() process
 function create_nova_keys_dir {
@@ -652,11 +897,13 @@ function init_nova {
 
 # install_novaclient() - Collect source and prepare
 function install_novaclient {
-    if use_library_from_git "python-novaclient"; then
-        git_clone_by_name "python-novaclient"
-        setup_dev_lib "python-novaclient"
-        sudo install -D -m 0644 -o $STACK_USER {${GITDIR["python-novaclient"]}/tools/,/etc/bash_completion.d/}nova.bash_completion
-    fi
+    setup_develop $NOVACLIENT_DIR
+
+    local inst_file='nova.bash_completion'
+    local inst_src=$NOVACLIENT_DIR/tools/$inst_file
+    local inst_dst=$INSTALL_PREFIX/etc/bash_completion.d/$inst_file
+
+    host_install $inst_src $inst_dst
 }
 
 # install_nova() - Collect source and prepare
@@ -689,9 +936,13 @@ function install_nova {
         fi
     fi
 
-    git_clone $NOVA_REPO $NOVA_DIR $NOVA_BRANCH
     setup_develop $NOVA_DIR
-    sudo install -D -m 0644 -o $STACK_USER {$NOVA_DIR/tools/,/etc/bash_completion.d/}nova-manage.bash_completion
+
+    local inst_file='nova-manage.bash_completion'
+    local inst_src=$NOVA_DIR/tools/$inst_file
+    local inst_dst=$INSTALL_PREFIX/etc/bash_completion.d/$inst_file
+
+    host_install $inst_src $inst_dst
 }
 
 # start_nova_api() - Start the API process ahead of other things

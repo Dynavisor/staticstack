@@ -35,13 +35,12 @@ if [[ -r $CINDER_PLUGINS/$CINDER_DRIVER ]]; then
 fi
 
 # set up default directories
-GITDIR["python-cinderclient"]=$DEST/python-cinderclient
-
 CINDER_DIR=$DEST/cinder
+CINDERCLIENT_DIR=$DEST/python-cinderclient
 CINDER_STATE_PATH=${CINDER_STATE_PATH:=$DATA_DIR/cinder}
 CINDER_AUTH_CACHE_DIR=${CINDER_AUTH_CACHE_DIR:-/var/cache/cinder}
 
-CINDER_CONF_DIR=/etc/cinder
+CINDER_CONF_DIR=$INSTALL_PREFIX/etc/cinder
 CINDER_CONF=$CINDER_CONF_DIR/cinder.conf
 CINDER_API_PASTE_INI=$CINDER_CONF_DIR/api-paste.ini
 
@@ -138,6 +137,8 @@ function _clean_lvm_backing_file {
 # cleanup_cinder() - Remove residual data files, anything left over from previous
 # runs that a clean run would need to clean up
 function cleanup_cinder {
+
+    if ! is_freebsd; then
     # ensure the volume group is cleared up because fails might
     # leave dead volumes in the group
     TARGETS=$(sudo tgtadm --op show --mode target)
@@ -179,6 +180,13 @@ function cleanup_cinder {
         _clean_lvm_lv $VOLUME_GROUP2 $VOLUME_NAME_PREFIX
         _clean_lvm_backing_file $VOLUME_GROUP2
     fi
+
+    else
+	# freebsd
+	# destroy all data sets
+	sudo zfs destroy -r $VOLUME_GROUP
+	
+    fi
 }
 
 # configure_cinder_rootwrap() - configure Cinder's rootwrap
@@ -186,6 +194,11 @@ function configure_cinder_rootwrap {
     # Set the paths of certain binaries
     CINDER_ROOTWRAP=$(get_rootwrap_location cinder)
 
+    if ! is_freebsd; then
+	CINDER_GROUP=root
+    else
+	CINDER_GROUP=wheel
+    fi
     # Deploy new rootwrap filters files (owned by root).
     # Wipe any existing rootwrap.d files first
     if [[ -d $CINDER_CONF_DIR/rootwrap.d ]]; then
@@ -194,12 +207,17 @@ function configure_cinder_rootwrap {
     # Deploy filters to /etc/cinder/rootwrap.d
     sudo mkdir -m 755 $CINDER_CONF_DIR/rootwrap.d
     sudo cp $CINDER_DIR/etc/cinder/rootwrap.d/*.filters $CINDER_CONF_DIR/rootwrap.d
-    sudo chown -R root:root $CINDER_CONF_DIR/rootwrap.d
+    sudo chown -R root:$CINDER_GROUP $CINDER_CONF_DIR/rootwrap.d
     sudo chmod 644 $CINDER_CONF_DIR/rootwrap.d/*
     # Set up rootwrap.conf, pointing to /etc/cinder/rootwrap.d
     sudo cp $CINDER_DIR/etc/cinder/rootwrap.conf $CINDER_CONF_DIR/
-    sudo sed -e "s:^filters_path=.*$:filters_path=$CINDER_CONF_DIR/rootwrap.d:" -i $CINDER_CONF_DIR/rootwrap.conf
-    sudo chown root:root $CINDER_CONF_DIR/rootwrap.conf
+
+    if ! is_freebsd; then
+	sudo sed -e "s:^filters_path=.*$:filters_path=$CINDER_CONF_DIR/rootwrap.d:" -i $CINDER_CONF_DIR/rootwrap.conf
+    else
+	sudo sed -e "s:^filters_path=.*$:filters_path=$CINDER_CONF_DIR/rootwrap.d:" -i '' $CINDER_CONF_DIR/rootwrap.conf
+    fi
+    sudo chown root:$CINDER_GROUP $CINDER_CONF_DIR/rootwrap.conf
     sudo chmod 0644 $CINDER_CONF_DIR/rootwrap.conf
     # Specify rootwrap.conf as first parameter to rootwrap
     ROOTWRAP_CSUDOER_CMD="$CINDER_ROOTWRAP $CINDER_CONF_DIR/rootwrap.conf *"
@@ -208,8 +226,8 @@ function configure_cinder_rootwrap {
     TEMPFILE=`mktemp`
     echo "$STACK_USER ALL=(root) NOPASSWD: $ROOTWRAP_CSUDOER_CMD" >$TEMPFILE
     chmod 0440 $TEMPFILE
-    sudo chown root:root $TEMPFILE
-    sudo mv $TEMPFILE /etc/sudoers.d/cinder-rootwrap
+    sudo chown root:$CINDER_GROUP $TEMPFILE
+    sudo mv $TEMPFILE $INSTALL_PREFIX/etc/sudoers.d/cinder-rootwrap
 }
 
 # configure_cinder() - Set config files, create data dirs, etc
@@ -248,13 +266,21 @@ function configure_cinder {
     iniset $CINDER_CONF DEFAULT auth_strategy keystone
     iniset $CINDER_CONF DEFAULT debug $ENABLE_DEBUG_LOG_LEVEL
     iniset $CINDER_CONF DEFAULT verbose True
+
+    if ! is_freebsd; then
+	CINDER_ISCSI_DRIVER=cinder.volume.drivers.lvm.LVMISCSIDriver
+    else
+	#CINDER_ISCSI_DRIVER=cinder.volume.drivers.zfs.ZFSISCSIDriver
+	CINDER_ISCSI_DRIVER=cinder.volume.drivers.zfs.ZFSVolumeDriver
+    fi
+    
     if [ "$CINDER_MULTI_LVM_BACKEND" = "True" ]; then
         iniset $CINDER_CONF DEFAULT enabled_backends lvmdriver-1,lvmdriver-2
         iniset $CINDER_CONF lvmdriver-1 volume_group $VOLUME_GROUP
-        iniset $CINDER_CONF lvmdriver-1 volume_driver cinder.volume.drivers.lvm.LVMISCSIDriver
+        iniset $CINDER_CONF lvmdriver-1 volume_driver $CINDER_ISCSI_DRIVER
         iniset $CINDER_CONF lvmdriver-1 volume_backend_name LVM_iSCSI
         iniset $CINDER_CONF lvmdriver-2 volume_group $VOLUME_GROUP2
-        iniset $CINDER_CONF lvmdriver-2 volume_driver cinder.volume.drivers.lvm.LVMISCSIDriver
+        iniset $CINDER_CONF lvmdriver-2 volume_driver $CINDER_ISCSI_DRIVER
         iniset $CINDER_CONF lvmdriver-2 volume_backend_name LVM_iSCSI_2
         # NOTE(mriedem): Work around Cinder "wishlist" bug 1255593
         if [[ "$CINDER_SECURE_DELETE" == "False" ]]; then
@@ -265,6 +291,7 @@ function configure_cinder {
         iniset $CINDER_CONF DEFAULT volume_group $VOLUME_GROUP
         iniset $CINDER_CONF DEFAULT volume_name_template ${VOLUME_NAME_PREFIX}%s
     fi
+
     iniset $CINDER_CONF DEFAULT my_ip "$CINDER_SERVICE_HOST"
     iniset $CINDER_CONF DEFAULT iscsi_helper tgtadm
     iniset $CINDER_CONF DEFAULT sql_connection `database_connection_url cinder`
@@ -305,6 +332,7 @@ function configure_cinder {
     fi
 
     if [[ -r $CINDER_PLUGINS/$CINDER_DRIVER ]]; then
+	echo "Dynavisor: cinder"
         configure_cinder_driver
     fi
 
@@ -395,38 +423,56 @@ function create_cinder_volume_group {
     # The two backing files are ``VOLUME_BACKING_FILE_SIZE`` in size, and they are stored in
     # the ``DATA_DIR``.
 
-    if ! sudo vgs $VOLUME_GROUP; then
-        if [ -z "$VOLUME_BACKING_DEVICE" ]; then
-            # Only create if the file doesn't already exists
-            [[ -f $VOLUME_BACKING_FILE ]] || truncate -s $VOLUME_BACKING_FILE_SIZE $VOLUME_BACKING_FILE
-            DEV=`sudo losetup -f --show $VOLUME_BACKING_FILE`
+    if ! is_freebsd; then
+	
+	if ! sudo vgs $VOLUME_GROUP; then
+            if [ -z "$VOLUME_BACKING_DEVICE" ]; then
+		# Only create if the file doesn't already exists
+		[[ -f $VOLUME_BACKING_FILE ]] || truncate -s $VOLUME_BACKING_FILE_SIZE $VOLUME_BACKING_FILE
+		DEV=`sudo losetup -f --show $VOLUME_BACKING_FILE`
 
-            # Only create if the loopback device doesn't contain $VOLUME_GROUP
-            if ! sudo vgs $VOLUME_GROUP; then
-                sudo vgcreate $VOLUME_GROUP $DEV
-            fi
-        else
-            sudo vgcreate $VOLUME_GROUP $VOLUME_BACKING_DEVICE
-        fi
-    fi
-    if [ "$CINDER_MULTI_LVM_BACKEND" = "True" ]; then
-        #set up the second volume if CINDER_MULTI_LVM_BACKEND is enabled
-
-        if ! sudo vgs $VOLUME_GROUP2; then
-            if [ -z "$VOLUME_BACKING_DEVICE2" ]; then
-                # Only create if the file doesn't already exists
-                [[ -f $VOLUME_BACKING_FILE2 ]] || truncate -s $VOLUME_BACKING_FILE_SIZE $VOLUME_BACKING_FILE2
-
-                DEV=`sudo losetup -f --show $VOLUME_BACKING_FILE2`
-
-                # Only create if the loopback device doesn't contain $VOLUME_GROUP
-                if ! sudo vgs $VOLUME_GROUP2; then
-                    sudo vgcreate $VOLUME_GROUP2 $DEV
-                fi
+		# Only create if the loopback device doesn't contain $VOLUME_GROUP
+		if ! sudo vgs $VOLUME_GROUP; then
+                    sudo vgcreate $VOLUME_GROUP $DEV
+		fi
             else
-                sudo vgcreate $VOLUME_GROUP2 $VOLUME_BACKING_DEVICE2
+		sudo vgcreate $VOLUME_GROUP $VOLUME_BACKING_DEVICE
             fi
-        fi
+	fi
+	if [ "$CINDER_MULTI_LVM_BACKEND" = "True" ]; then
+            #set up the second volume if CINDER_MULTI_LVM_BACKEND is enabled
+
+            if ! sudo vgs $VOLUME_GROUP2; then
+		if [ -z "$VOLUME_BACKING_DEVICE2" ]; then
+                    # Only create if the file doesn't already exists
+                    [[ -f $VOLUME_BACKING_FILE2 ]] || truncate -s $VOLUME_BACKING_FILE_SIZE $VOLUME_BACKING_FILE2
+
+                    DEV=`sudo losetup -f --show $VOLUME_BACKING_FILE2`
+
+                    # Only create if the loopback device doesn't contain $VOLUME_GROUP
+                    if ! sudo vgs $VOLUME_GROUP2; then
+			sudo vgcreate $VOLUME_GROUP2 $DEV
+                    fi
+		else
+                    sudo vgcreate $VOLUME_GROUP2 $VOLUME_BACKING_DEVICE2
+		fi
+            fi
+	fi
+    else
+	# in the case of freeBSD 10.1 at this point, file backed devices don't seem to work properly with zfs
+	if ! zfs list $VOLUME_GROUP; then
+	    # create the zpool/volume_group
+            if [ -z "$VOLUME_BACKING_DEVICE" ]; then
+		# Only create if the file doesn't already exists
+		[[ -f $VOLUME_BACKING_FILE ]] || truncate -s $VOLUME_BACKING_FILE_SIZE $VOLUME_BACKING_FILE
+
+		# the following will work only after patch https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=195061#c12
+		sudo zpool create -f $VOLUME_GROUP $VOLUME_BACKING_FILE
+
+	    else
+		sudo zpool create -f $VOLUME_GROUP $VOLUME_BACKING_DEVICE
+            fi
+	fi
     fi
 
     mkdir -p $CINDER_STATE_PATH/volumes
@@ -449,20 +495,28 @@ function init_cinder {
 
         create_cinder_volume_group
 
-        if sudo vgs $VOLUME_GROUP; then
-            if is_fedora || is_suse; then
-                # service is not started by default
-                start_service tgtd
-            fi
+	if ! is_freebsd; then
+            if sudo vgs $VOLUME_GROUP; then
+		if is_fedora || is_suse; then
+                    # service is not started by default
+                    start_service tgtd
+		fi
 
-            # Remove iscsi targets
-            sudo tgtadm --op show --mode target | grep $VOLUME_NAME_PREFIX | grep Target | cut -f3 -d ' ' | sudo xargs -n1 tgt-admin --delete || true
-            # Start with a clean volume group
-            _clean_lvm_lv $VOLUME_GROUP $VOLUME_NAME_PREFIX
-            if [ "$CINDER_MULTI_LVM_BACKEND" = "True" ]; then
-                _clean_lvm_lv $VOLUME_GROUP2 $VOLUME_NAME_PREFIX
+		# Remove iscsi targets
+		sudo tgtadm --op show --mode target | grep $VOLUME_NAME_PREFIX | grep Target | cut -f3 -d ' ' | sudo xargs -n1 tgt-admin --delete || true
+		# Start with a clean volume group
+		_clean_lvm_lv $VOLUME_GROUP $VOLUME_NAME_PREFIX
+		if [ "$CINDER_MULTI_LVM_BACKEND" = "True" ]; then
+                    _clean_lvm_lv $VOLUME_GROUP2 $VOLUME_NAME_PREFIX
+		fi
             fi
-        fi
+	else
+	    # freebsd version
+	    if sudo zfs list $VOLUME_GROUP; then
+		# delete all datasets
+		sudo zfs destroy -r $VOLUME_GROUP
+	    fi
+	fi
     fi
 
     create_cinder_cache_dir
@@ -471,16 +525,19 @@ function init_cinder {
 # install_cinder() - Collect source and prepare
 function install_cinder {
     git_clone $CINDER_REPO $CINDER_DIR $CINDER_BRANCH
-    setup_develop $CINDER_DIR
+    #setup_develop $CINDER_DIR
+:
 }
 
 # install_cinderclient() - Collect source and prepare
 function install_cinderclient {
-    if use_library_from_git "python-cinderclient"; then
-        git_clone_by_name "python-cinderclient"
-        setup_dev_lib "python-cinderclient"
-        sudo install -D -m 0644 -o $STACK_USER {${GITDIR["python-cinderclient"]}/tools/,/etc/bash_completion.d/}cinder.bash_completion
-    fi
+    setup_develop $CINDERCLIENT_DIR
+
+    local inst_file='cinder.bash_completion'
+    local inst_src=$CINDERCLIENT_DIR/tools/$inst_file
+    local inst_dst=$INSTALL_PREFIX/etc/bash_completion.d/$inst_file
+
+    host_install $inst_src $inst_dst
 }
 
 # apply config.d approach for cinder volumes directory
@@ -495,26 +552,30 @@ function _configure_tgt_for_config_d {
 function start_cinder {
     if is_service_enabled c-vol; then
         # Delete any old stack.conf
-        sudo rm -f /etc/tgt/conf.d/stack.conf
-        _configure_tgt_for_config_d
-        if is_ubuntu; then
-            sudo service tgt restart
-        elif is_fedora; then
-            if [[ $DISTRO =~ (rhel6) ]]; then
-                sudo /sbin/service tgtd restart
+
+	# tgt stuff not supported on freebsd
+	if ! is_freebsd; then
+            sudo rm -f /etc/tgt/conf.d/stack.conf
+            _configure_tgt_for_config_d
+            if is_ubuntu; then
+		sudo service tgt restart
+            elif is_fedora; then
+		if [[ $DISTRO =~ (rhel6) ]]; then
+                    sudo /sbin/service tgtd restart
+		else
+                    # bypass redirection to systemctl during restart
+                    sudo /sbin/service --skip-redirect tgtd restart
+		fi
+            elif is_suse; then
+		restart_service tgtd
             else
-                # bypass redirection to systemctl during restart
-                sudo /sbin/service --skip-redirect tgtd restart
+		# note for other distros: unstack.sh also uses the tgt/tgtd service
+		# name, and would need to be adjusted too
+		exit_distro_not_supported "restarting tgt"
             fi
-        elif is_suse; then
-            restart_service tgtd
-        else
-            # note for other distros: unstack.sh also uses the tgt/tgtd service
-            # name, and would need to be adjusted too
-            exit_distro_not_supported "restarting tgt"
-        fi
-        # NOTE(gfidente): ensure tgtd is running in debug mode
-        sudo tgtadm --mode system --op update --name debug --value on
+            # NOTE(gfidente): ensure tgtd is running in debug mode
+            sudo tgtadm --mode system --op update --name debug --value on
+	fi
     fi
 
     run_process c-api "$CINDER_BIN_DIR/cinder-api --config-file $CINDER_CONF"
@@ -545,11 +606,15 @@ function stop_cinder {
     done
 
     if is_service_enabled c-vol; then
-        if is_ubuntu; then
-            stop_service tgt
-        else
-            stop_service tgtd
-        fi
+	if ! is_freebsd; then
+            if is_ubuntu; then
+		stop_service tgt
+            else
+		stop_service tgtd
+            fi
+	else
+	    :
+	fi
     fi
 }
 

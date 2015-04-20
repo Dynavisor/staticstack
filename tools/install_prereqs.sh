@@ -61,7 +61,7 @@ if is_ubuntu && echo $PACKAGES | grep -q dkms ; then
     PACKAGES="$PACKAGES linux-headers-$(uname -r)"
 fi
 
-install_package $PACKAGES
+# install_package $PACKAGES
 
 if [[ -n "$SYSLOG" && "$SYSLOG" != "False" ]]; then
     if is_ubuntu || is_fedora; then

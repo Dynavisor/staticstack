@@ -33,6 +33,8 @@ function cleanup_database_mysql {
         fi
     elif is_suse; then
         MYSQL=mysql
+    elif is_freebsd; then
+	MYSQL=mysql-server
     else
         return
     fi
@@ -59,15 +61,20 @@ function configure_database_mysql {
             MYSQL=mysqld
         fi
         MY_CONF=/etc/my.cnf
+        MYSQL=mysqld
     elif is_suse; then
         MY_CONF=/etc/my.cnf
         MYSQL=mysql
+    elif is_freebsd; then
+	sudo cp /usr/local/share/mysql/my-default.cnf /etc/my.cnf
+	MY_CONF=/etc/my.cnf
+	MYSQL=mysql-server
     else
         exit_distro_not_supported "mysql configuration"
     fi
 
     # Start mysql-server
-    if is_fedora || is_suse; then
+    if is_fedora || is_suse || is_freebsd; then
         # service is not started by default
         start_service $MYSQL
     fi
@@ -92,11 +99,18 @@ function configure_database_mysql {
 
     if [[ "$DATABASE_QUERY_LOGGING" == "True" ]]; then
         echo_summary "Enabling MySQL query logging"
-
+        
+        if ! is_freebsd; then
         sudo sed -e '/log.slow.queries/d' \
             -e '/long.query.time/d' \
             -e '/log.queries.not.using.indexes/d' \
             -i $MY_CONF
+        else
+        sudo sed -e '/log.slow.queries/d' \
+            -e '/long.query.time/d' \
+            -e '/log.queries.not.using.indexes/d' \
+            -i '' $MY_CONF
+        fi
 
         # Turn on slow query log, log all queries (any query taking longer than
         # 0 seconds) and log all non-indexed queries
@@ -145,6 +159,9 @@ EOF
         if ! is_package_installed mariadb; then
             install_package mysql-community-server
         fi
+    elif is_freebsd; then
+	# install_package mysql56-server
+	rc_add "mysql_enable" "YES"
     else
         exit_distro_not_supported "mysql installation"
     fi

@@ -142,7 +142,7 @@ disable_negated_services
 
 # Warn users who aren't on an explicitly supported distro, but allow them to
 # override check and attempt installation with ``FORCE=yes ./stack``
-if [[ ! ${DISTRO} =~ (precise|saucy|trusty|7.0|wheezy|sid|testing|jessie|f19|f20|rhel6) ]]; then
+if [[ ! ${DISTRO} =~ (precise|saucy|trusty|7.0|wheezy|sid|testing|jessie|f19|f20|freebsd10|freebsd11|rhel6) ]]; then
     echo "WARNING: this script has not been tested on $DISTRO"
     if [[ "$FORCE" != "yes" ]]; then
         die $LINENO "If you wish to run this script anyway run with FORCE=yes"
@@ -190,23 +190,25 @@ if [[ $EUID -eq 0 ]]; then
     exit 1
 fi
 
-# We're not **root**, make sure ``sudo`` is available
-is_package_installed sudo || install_package sudo
+if [[ $(whoami) != $STACK_USER ]]; then
+    err "Current user: $(whoami).  Expected: $STACK_USER. Please do 'su - $STACK_USER' and rerun."
+fi
 
 # UEC images ``/etc/sudoers`` does not have a ``#includedir``, add one
 sudo grep -q "^#includedir.*/etc/sudoers.d" /etc/sudoers ||
     echo "#includedir /etc/sudoers.d" | sudo tee -a /etc/sudoers
 
+# Dynavisor: Do this before running stack.sh during setup.
 # Set up devstack sudoers
-TEMPFILE=`mktemp`
-echo "$STACK_USER ALL=(root) NOPASSWD:ALL" >$TEMPFILE
+# TEMPFILE=`mktemp`
+# echo "$STACK_USER ALL=(root) NOPASSWD:ALL" >$TEMPFILE
 # Some binaries might be under /sbin or /usr/sbin, so make sure sudo will
 # see them by forcing PATH
-echo "Defaults:$STACK_USER secure_path=/sbin:/usr/sbin:/usr/bin:/bin:/usr/local/sbin:/usr/local/bin" >> $TEMPFILE
-echo "Defaults:$STACK_USER !requiretty" >> $TEMPFILE
-chmod 0440 $TEMPFILE
-sudo chown root:root $TEMPFILE
-sudo mv $TEMPFILE /etc/sudoers.d/50_stack_sh
+# echo "Defaults:$STACK_USER secure_path=/sbin:/usr/sbin:/usr/bin:/bin:/usr/local/sbin:/usr/local/bin" >> $TEMPFILE
+# echo "Defaults:$STACK_USER !requiretty" >> $TEMPFILE
+# chmod 0440 $TEMPFILE
+# sudo chown root:root $TEMPFILE
+# sudo mv $TEMPFILE /etc/sudoers.d/50_stack_sh
 
 # Additional repos
 # ----------------
@@ -261,9 +263,12 @@ check_path_perm_sanity ${DEST}
 # Certain services such as rabbitmq require that the local hostname resolves
 # correctly.  Make sure it exists in /etc/hosts so that is always true.
 LOCAL_HOSTNAME=`hostname -s`
-if [ -z "`grep ^127.0.0.1 /etc/hosts | grep $LOCAL_HOSTNAME`" ]; then
+if is_freebsd; then
+    sudo sed -i '' "s/\(^127.0.0.1.*\)/\1 $LOCAL_HOSTNAME/" /etc/hosts
+else
     sudo sed -i "s/\(^127.0.0.1.*\)/\1 $LOCAL_HOSTNAME/" /etc/hosts
 fi
+    
 
 # Destination path for service data
 DATA_DIR=${DATA_DIR:-${DEST}/data}
@@ -354,11 +359,14 @@ source $TOP_DIR/lib/ldap
 # --------------
 
 # Phase: source
-if [[ -d $TOP_DIR/extras.d ]]; then
-    for i in $TOP_DIR/extras.d/*.sh; do
-        [[ -r $i ]] && source $i source
-    done
-fi
+#if [[ -d $TOP_DIR/extras.d ]]; then
+#    for i in $TOP_DIR/extras.d/*.sh; do
+#        [[ -r $i ]] && source $i source
+#    done
+#fi
+
+# Set the destination directories for other OpenStack projects
+OPENSTACKCLIENT_DIR=$DEST/python-openstackclient
 
 # Interactive Configuration
 # -------------------------
@@ -630,8 +638,15 @@ echo_summary "Installing package prerequisites"
 source $TOP_DIR/tools/install_prereqs.sh
 
 # Configure an appropriate python environment
-if [[ "$OFFLINE" != "True" ]]; then
-    $TOP_DIR/tools/install_pip.sh
+if ! is_freebsd; then
+    # Configure an appropriate python environment
+    if [[ "$OFFLINE" != "True" ]]; then
+        $TOP_DIR/tools/install_pip.sh
+    fi
+else
+    # By default, cc does not look into this dir.
+    # This is needed by python packages.
+    export CPATH=/usr/local/include
 fi
 
 # Do the ugly hacks for borken packages and distros
@@ -669,12 +684,14 @@ echo_summary "Installing OpenStack project source"
 install_infra
 
 # Install oslo libraries that have graduated
-install_oslo
+# Dynavisor: we'll install these before hand
+# install_oslo
 
+# Dynavisor: Skip Stackforge
 # Install stackforge libraries for testing
-if is_service_enabled stackforge_libs; then
-    install_stackforge
-fi
+# if is_service_enabled stackforge_libs; then
+#     install_stackforge
+# fi
 
 # Install clients libraries
 install_keystoneclient
@@ -691,9 +708,12 @@ if is_service_enabled heat horizon; then
     install_heatclient
 fi
 
+# setup openstackclient
+setup_develop $OPENSTACKCLIENT_DIR
+
 if is_service_enabled key; then
     install_keystone
-    configure_keystone
+    configure_keystone_less
 fi
 
 if is_service_enabled s-proxy; then
@@ -712,7 +732,7 @@ fi
 if is_service_enabled g-api n-api; then
     # image catalog service
     install_glance
-    configure_glance
+    configure_glance_less
 fi
 
 if is_service_enabled cinder; then
@@ -720,16 +740,17 @@ if is_service_enabled cinder; then
     configure_cinder
 fi
 
-if is_service_enabled neutron; then
-    install_neutron
-    install_neutron_third_party
-fi
+# Dynavisor: temporarily disable for simplicity
+# if is_service_enabled neutron; then
+#     install_neutron
+#     install_neutron_third_party
+# fi
 
 if is_service_enabled nova; then
     # compute service
     install_nova
     cleanup_nova
-    configure_nova
+    configure_nova_less
 fi
 
 if is_service_enabled horizon; then
@@ -745,6 +766,7 @@ if is_service_enabled ceilometer; then
     install_ceilometer
     echo_summary "Configuring Ceilometer"
     configure_ceilometer
+    configure_ceilometerclient
 fi
 
 if is_service_enabled heat; then
@@ -761,43 +783,44 @@ if is_service_enabled tls-proxy; then
     # don't be naive and add to existing line!
 fi
 
+# Dynavisor: temporarily disable extras for simplicity
 # Extras Install
 # --------------
 
 # Phase: install
-if [[ -d $TOP_DIR/extras.d ]]; then
-    for i in $TOP_DIR/extras.d/*.sh; do
-        [[ -r $i ]] && source $i stack install
-    done
-fi
+# if [[ -d $TOP_DIR/extras.d ]]; then
+#     for i in $TOP_DIR/extras.d/*.sh; do
+#         [[ -r $i ]] && source $i stack install
+#     done
+# fi
 
 # install the OpenStack client, needed for most setup commands
-if use_library_from_git "python-openstackclient"; then
-    git_clone_by_name "python-openstackclient"
-    setup_dev_lib "python-openstackclient"
-else
+# if use_library_from_git "python-openstackclient"; then
+#     git_clone_by_name "python-openstackclient"
+#     setup_dev_lib "python-openstackclient"
+# else
     # FIXME(adam)g: Work around a gate wedge by installing a capped novaclient
     # here, so that the following OSC installation does not pull in a newer one
     # via its uncapped requirement.  This can be removed once OSC ends up in a
     # venv.
-    pip_install "python-novaclient>=2.17.0,<2.21"
+#    pip_install "python-novaclient>=2.17.0,<2.21"
 
     # Also install the capped neutronclient as per blocked
     # https://review.openstack.org/#/c/157606/
-    pip_install "python-neutronclient>=2.3.4,<2.3.11"
+#    pip_install "python-neutronclient>=2.3.4,<2.3.11"
 
-    pip_install "python-openstackclient<=0.4.1"
-fi
+#    pip_install "python-openstackclient<=0.4.1"
+# fi
 
-if [[ $TRACK_DEPENDS = True ]]; then
-    $DEST/.venv/bin/pip freeze > $DEST/requires-post-pip
-    if ! diff -Nru $DEST/requires-pre-pip $DEST/requires-post-pip > $DEST/requires.diff; then
-        echo "Detect some changes for installed packages of pip, in depend tracking mode"
-        cat $DEST/requires.diff
-    fi
-    echo "Ran stack.sh in depend tracking mode, bailing out now"
-    exit 0
-fi
+# if [[ $TRACK_DEPENDS = True ]]; then
+#     $DEST/.venv/bin/pip freeze > $DEST/requires-post-pip
+#     if ! diff -Nru $DEST/requires-pre-pip $DEST/requires-post-pip > $DEST/requires.diff; then
+#         echo "Detect some changes for installed packages of pip, in depend tracking mode"
+#         cat $DEST/requires.diff
+#     fi
+#     echo "Ran stack.sh in depend tracking mode, bailing out now"
+#     exit 0
+# fi
 
 
 # Syslog
@@ -810,27 +833,44 @@ if [[ $SYSLOG != "False" ]]; then
 \$ModLoad imrelp
 \$InputRELPServerRun $SYSLOG_PORT
 EOF
-        sudo mv /tmp/90-stack-m.conf /etc/rsyslog.d
+        sudo mv /tmp/90-stack-m.conf $INSTALL_PREFIX/etc/rsyslog.d
     else
         # Set rsyslog to send to remote host
         cat <<EOF >/tmp/90-stack-s.conf
 *.*		:omrelp:$SYSLOG_HOST:$SYSLOG_PORT
 EOF
-        sudo mv /tmp/90-stack-s.conf /etc/rsyslog.d
+        sudo mv /tmp/90-stack-s.conf $INSTALL_PREFIX/etc/rsyslog.d
     fi
 
-    RSYSLOGCONF="/etc/rsyslog.conf"
+    RSYSLOGCONF="$INSTALL_PREFIX/etc/rsyslog.conf"
+
     if [ -f $RSYSLOGCONF ]; then
         sudo cp -b $RSYSLOGCONF $RSYSLOGCONF.bak
         if [[ $(grep '$SystemLogRateLimitBurst' $RSYSLOGCONF)  ]]; then
-            sudo sed -i 's/$SystemLogRateLimitBurst\ .*/$SystemLogRateLimitBurst\ 0/' $RSYSLOGCONF
+            if is_freebsd; then
+                sudo sed -i '' 's/$SystemLogRateLimitBurst\ .*/$SystemLogRateLimitBurst\ 0/' $RSYSLOGCONF
+            else
+                sudo sed -i 's/$SystemLogRateLimitBurst\ .*/$SystemLogRateLimitBurst\ 0/' $RSYSLOGCONF
+            fi
         else
-            sudo sed -i '$ i $SystemLogRateLimitBurst\ 0' $RSYSLOGCONF
+            if is_freebsd; then
+                sudo sed -i '' '$ i $SystemLogRateLimitBurst\ 0' $RSYSLOGCONF
+            else
+                sudo sed -i '$ i $SystemLogRateLimitBurst\ 0' $RSYSLOGCONF
+            fi
         fi
         if [[ $(grep '$SystemLogRateLimitInterval' $RSYSLOGCONF)  ]]; then
-            sudo sed -i 's/$SystemLogRateLimitInterval\ .*/$SystemLogRateLimitInterval\ 0/' $RSYSLOGCONF
+            if is_freebsd; then
+                sudo sed -i '' 's/$SystemLogRateLimitInterval\ .*/$SystemLogRateLimitInterval\ 0/' $RSYSLOGCONF
+            else
+                sudo sed -i 's/$SystemLogRateLimitInterval\ .*/$SystemLogRateLimitInterval\ 0/' $RSYSLOGCONF
+            fi
         else
-            sudo sed -i '$ i $SystemLogRateLimitInterval\ 0' $RSYSLOGCONF
+            if is_freebsd; then
+                sudo sed -i '' '$ i $SystemLogRateLimitInterval\ 0' $RSYSLOGCONF
+            else
+                sudo sed -i '$ i $SystemLogRateLimitInterval\ 0' $RSYSLOGCONF
+            fi
         fi
     fi
 
@@ -869,7 +909,11 @@ fi
 USE_SCREEN=$(trueorfalse True $USE_SCREEN)
 if [[ "$USE_SCREEN" == "True" ]]; then
     # Create a new named screen to run processes in
-    screen -d -m -S $SCREEN_NAME -t shell -s /bin/bash
+    if is_freebsd; then
+    	screen -d -m -S $SCREEN_NAME -t shell -s /usr/local/bin/bash
+    else
+    	screen -d -m -S $SCREEN_NAME -t shell -s /bin/bash
+    fi
     sleep 1
 
     # Set a reasonable status bar
@@ -1001,16 +1045,23 @@ fi
 
 if is_service_enabled n-net q-dhcp; then
     # Delete traces of nova networks from prior runs
-    # Do not kill any dnsmasq instance spawned by NetworkManager
-    netman_pid=$(pidof NetworkManager || true)
-    if [ -z "$netman_pid" ]; then
-        sudo killall dnsmasq || true
-    else
-        sudo ps h -o pid,ppid -C dnsmasq | grep -v $netman_pid | awk '{print $1}' | sudo xargs kill || true
-    fi
-
     clean_iptables
 
+        if ! is_freebsd; then
+        # Delete traces of nova networks from prior runs
+        # Do not kill any dnsmasq instance spawned by NetworkManager
+        netman_pid=$(pidof NetworkManager || true)
+        if [ -z "$netman_pid" ]; then
+            sudo killall dnsmasq || true
+        else
+            sudo ps h -o pid,ppid -C dnsmasq | grep -v $netman_pid | awk '{print $1}' | sudo xargs kill || true
+        fi
+
+        clean_iptables
+    fi
+
+    
+    
     if is_service_enabled n-net; then
         rm -rf ${NOVA_STATE_PATH}/networks
         sudo mkdir -p ${NOVA_STATE_PATH}/networks
@@ -1018,7 +1069,11 @@ if is_service_enabled n-net q-dhcp; then
     fi
 
     # Force IP forwarding on, just in case
-    sudo sysctl -w net.ipv4.ip_forward=1
+    if is_freebsd; then
+        sudo sysctl net.inet.ip.forwarding=1
+    else
+        sudo sysctl -w net.ipv4.ip_forward=1
+    fi
 fi
 
 
@@ -1068,12 +1123,13 @@ fi
 # Extras Configuration
 # ====================
 
+# Dynavisor: temporarily disable for now
 # Phase: post-config
-if [[ -d $TOP_DIR/extras.d ]]; then
-    for i in $TOP_DIR/extras.d/*.sh; do
-        [[ -r $i ]] && source $i stack post-config
-    done
-fi
+#if [[ -d $TOP_DIR/extras.d ]]; then
+#    for i in $TOP_DIR/extras.d/*.sh; do
+#        [[ -r $i ]] && source $i stack post-config
+#    done
+#fi
 
 
 # Local Configuration
@@ -1118,28 +1174,29 @@ if is_service_enabled g-reg; then
     TOKEN=$(keystone token-get | grep ' id ' | get_field 2)
     die_if_not_set $LINENO TOKEN "Keystone fail to get token"
 
-    if is_baremetal; then
-        echo_summary "Creating and uploading baremetal images"
+    # Dynavisor: temporarily disable this
+#    if is_baremetal; then
+#        echo_summary "Creating and uploading baremetal images"
 
         # build and upload separate deploy kernel & ramdisk
-        upload_baremetal_deploy $TOKEN
+#        upload_baremetal_deploy $TOKEN
 
         # upload images, separating out the kernel & ramdisk for PXE boot
-        for image_url in ${IMAGE_URLS//,/ }; do
-            upload_baremetal_image $image_url $TOKEN
-        done
-    else
-        echo_summary "Uploading images"
+#        for image_url in ${IMAGE_URLS//,/ }; do
+#            upload_baremetal_image $image_url $TOKEN
+#        done
+#    else
+#        echo_summary "Uploading images"
 
         # Option to upload legacy ami-tty, which works with xenserver
-        if [[ -n "$UPLOAD_LEGACY_TTY" ]]; then
-            IMAGE_URLS="${IMAGE_URLS:+${IMAGE_URLS},}https://github.com/downloads/citrix-openstack/warehouse/tty.tgz"
-        fi
+#        if [[ -n "$UPLOAD_LEGACY_TTY" ]]; then
+#            IMAGE_URLS="${IMAGE_URLS:+${IMAGE_URLS},}https://github.com/downloads/citrix-openstack/warehouse/tty.tgz"
+#        fi
 
-        for image_url in ${IMAGE_URLS//,/ }; do
-            upload_image $image_url $TOKEN
-        done
-    fi
+#        for image_url in ${IMAGE_URLS//,/ }; do
+#            upload_image $image_url $TOKEN
+#        done
+#    fi
 fi
 
 # Create an access key and secret key for nova ec2 register image
@@ -1150,19 +1207,32 @@ if is_service_enabled key && is_service_enabled swift3 && is_service_enabled nov
     iniset $NOVA_CONF DEFAULT s3_affix_tenant "True"
 fi
 
+# Dynavisor: temporarily disabled. Not performed in some installation guies
 # Create a randomized default value for the keymgr's fixed_key
-if is_service_enabled nova; then
-    FIXED_KEY=""
-    for i in $(seq 1 64); do
-        FIXED_KEY+=$(echo "obase=16; $(($RANDOM % 16))" | bc);
-    done;
-    iniset $NOVA_CONF keymgr fixed_key "$FIXED_KEY"
+#if is_service_enabled nova; then
+#    FIXED_KEY=""
+#    for i in $(seq 1 64); do
+#        FIXED_KEY+=$(echo "obase=16; $(($RANDOM % 16))" | bc);
+#    done;
+#    iniset $NOVA_CONF keymgr fixed_key "$FIXED_KEY"
+#fi
+
+# Dynavisor: disabled
+#if is_service_enabled zeromq; then
+#    echo_summary "Starting zermomq receiver"
+#    run_process zeromq "$OSLO_BIN_DIR/oslo-messaging-zmq-receiver"
+#fi
+
+# Dynavisor: oslo hack to keep with freebsd conventions
+# fix configuration file paths
+if is_freebsd; then
+    oslo_config_file="/usr/local/lib/python2.7/site-packages/oslo_config/cfg.py"   
+    grep -q "/usr/local/etc" $oslo_config_file || sudo sed -i . '/[^\(]'\''\/etc'\''/a \
+\ \ \ \ \ \ \ \ ,os.path.join('\''/usr/local/etc'\'', project) if project else None, \
+\ \ \ \ \ \ \ \ '\''/usr/local/etc'\''\
+'  $oslo_config_file
 fi
 
-if is_service_enabled zeromq; then
-    echo_summary "Starting zermomq receiver"
-    run_process zeromq "$OSLO_BIN_DIR/oslo-messaging-zmq-receiver"
-fi
 
 # Launch the nova-api and wait for it to answer before continuing
 if is_service_enabled n-api; then
@@ -1179,6 +1249,9 @@ elif is_service_enabled $DATABASE_BACKENDS && is_service_enabled n-net; then
     if is_service_enabled n-cell; then
         NM_CONF=${NOVA_CELLS_CONF}
     fi
+
+    # Dynavisor: another hack because of a sometimes the database is not sync'd up at this point and is empty?
+    $NOVA_BIN_DIR/nova-manage db sync
 
     # Create a small network
     $NOVA_BIN_DIR/nova-manage --config-file $NM_CONF network create "$PRIVATE_NETWORK_NAME" $FIXED_RANGE 1 $FIXED_NETWORK_SIZE $NETWORK_CREATE_ARGS
@@ -1287,12 +1360,13 @@ merge_config_group $TOP_DIR/local.conf extra
 # Run extras
 # ==========
 
+# Dynavisor: temporarily disable
 # Phase: extra
-if [[ -d $TOP_DIR/extras.d ]]; then
-    for i in $TOP_DIR/extras.d/*.sh; do
-        [[ -r $i ]] && source $i stack extra
-    done
-fi
+#if [[ -d $TOP_DIR/extras.d ]]; then
+#    for i in $TOP_DIR/extras.d/*.sh; do
+#        [[ -r $i ]] && source $i stack extra
+#    done
+#fi
 
 # Local Configuration
 # ===================
