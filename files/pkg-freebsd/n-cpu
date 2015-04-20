@@ -1,0 +1,4 @@
+libvirt
+qemu-devel
+py27-cffi
+tmux

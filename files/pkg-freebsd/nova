@@ -1,0 +1,14 @@
+arping
+dnsmasq
+gawk
+netmask
+py27-MySQLdb
+py27-libxml2
+py27-eventlet
+py27-gflags
+py27-kombu
+py27-lockfile
+py27-mox
+py27-sqlite3
+sudo
+py27-asn1

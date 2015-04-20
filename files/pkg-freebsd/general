@@ -1,0 +1,16 @@
+curl
+dbus
+git
+libffi
+libxml2
+libxslt
+psmisc
+py27-pip
+py27-virtualenv
+screen
+unzip
+wget
+expect
+node
+npm
+getopt
