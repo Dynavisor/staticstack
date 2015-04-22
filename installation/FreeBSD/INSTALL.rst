@@ -32,37 +32,41 @@ Install Openstack package dependencies and python dependencies
 
      sudo pkg add *.txz
 
-#. Some packages like *bash* require a little extra work::
+#. Some packages like bash require a little extra work: ::
+     
      sudo sh -c "printf 'fdesc /dev/fd fdescfs rw 0 0\n' >> /etc/fstab"
      sudo sh -c "printf 'proc /proc procfs rw 0 0\n' >> /etc/fstab"
 
      sudo mount -t fdescfs fdesc /dev/fd
      sudo mount -t procfs proc /proc
-     
+
+
 #. Next download the list of python packages from pip.txt (Refer to PIP Caching Section). Also download and place all of the necessary openstack repositories in /opt/stack. Necessary openstack repositories are:
 
-   *cinder
-   *django_openstack_auth
-   *glance
-   *heat
-   *horizon
-   *keystone
-   *noVNC
-   *nova
-   *pbr
-   *python-cinderclient
-   *python-glanceclient
-   *python-heatclient
-   *python-keystoneclient
-   *python-neutronclient
-   *python-novaclient
-   *python-openstackclient
-   *requirements
-   *swift
-   *taskflow
-   *tempest
+    * cinder
+    * django_openstack_auth
+    * glance
+    * heat
+    * horizon
+    * keystone
+    * noVNC
+    * nova
+    * pbr
+    * python-cinderclient
+    * python-glanceclient
+    * python-heatclient
+    * python-keystoneclient
+    * python-neutronclient
+    * python-novaclient
+    * python-openstackclient
+    * requirements
+    * swift
+    * taskflow
+    * tempest
 
-#. Next install the python packages. This can be done in the following way (assuming your python cached packages are installed in ${HOME}/.cache/).::
+
+#. Next install the python packages. This can be done in the following way (assuming your python cached packages are installed in ${HOME}/.cache/). ::
+
      sudo pip install --no-index --find-links=file://${HOME}/.cache six==1.9.0 
      sudo pip install -e /opt/stack/pbr
      sudo pip install --no-index --find-links=file://${HOME}/.cache/ -r pip_freeze.txt
@@ -82,9 +86,7 @@ Install Openstack package dependencies and python dependencies
      sudo pip install --no-index --find-links=file://${HOME}/.cache oslo.config==1.9.3
      sudo pip install --no-index --find-links=file://${HOME}/.cache websockify==0.5.1
 
-You may run across some error messages, but installing in the order above should ensure that the proper versions of all of the packages described in pip.txt are installed properly.
-
-#. Next we need to modify rc.conf to enable FreeBSD services we use.::
+#. You may run across some error messages, but installing in the order above should ensure that the proper versions of all of the packages described in pip.txt are installed properly. Next we need to modify rc.conf to enable FreeBSD services we use. ::
 
     sudo sh -c "printf 'libvirtd_enable=\"YES\"\n' >> /etc/rc.conf"
     sudo sh -c "printf 'firewall_enable=\"YES\"\n' >> /etc/rc.conf"
@@ -96,7 +98,8 @@ You may run across some error messages, but installing in the order above should
     sudo sh -c "printf 'natd_interface=\"bridge0\"\n' >> /etc/rc.conf"
     sudo sh -c "printf 'natd_flags=\"-dynamic -m\"\n' >> /etc/rc.conf"
 
-#. Lastly we want to install a placeholder for firewall rules.::
+#. Lastly we want to install a placeholder for firewall rules. ::
+
      sudo cp ipfw.rules /etc/ipfw.rules
 
 ===================
@@ -110,7 +113,8 @@ Post-Installation Setup
 =======================
 After Staticstack is finished installing Openstack properly we need to install our automated startup scripts, such that Openstack will start on boot.
 
-#. All we need to do is copy over the provided rc scripts::
+#. All we need to do is copy over the provided rc scripts: ::
+
      sudo mv startup-scripts/rc.d/* /usr/local/etc/rc.d/
      sudo reboot
 
@@ -119,7 +123,8 @@ At this point Openstack should be installed properly.
 ===========
 PIP Caching
 ===========
-To build your own pip packages cache to roll out with Staticstack you can do the following::
+To build your own pip packages cache to roll out with Staticstack you can do the following: ::
+
   mkdir -p $HOME/.cache
   sudo pip install --download $HOME/.cache -r pip.txt
   
