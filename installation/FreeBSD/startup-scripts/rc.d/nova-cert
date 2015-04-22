@@ -1,0 +1,32 @@
+#!/bin/sh
+
+# PROVIDE: nova-cert 
+# REQUIRE: nova-api
+# BEFORE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="novacert"
+rcvar=novacert_enable
+
+load_rc_config $name
+: ${novacert_enable:=yes}
+: ${novacert_user:=dynavisor}
+
+command="/usr/local/bin/nova-cert"
+command_args="2>/dev/null&"
+command_interpreter=/usr/local/bin/python2.7
+start_precmd="${name}_prestart"
+
+novacert_prestart()
+{
+    rc_flags="--config-file /usr/local/etc/nova/nova.conf ${rc_flags}"
+    if ! checkyesno novaapi_enable && \
+	    ! /usr/local/etc/rc.d/nova-api forcestatus 1>/dev/null 2>&1; then
+	force_depend novaapi || return 1
+    fi
+    return 0
+}
+
+run_rc_command "$1"

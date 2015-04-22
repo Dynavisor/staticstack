@@ -1,0 +1,27 @@
+#!/bin/sh
+
+# PROVIDE: cinder-scheduler 
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="cinderscheduler"
+rcvar=cinderscheduler_enable
+
+load_rc_config $name
+: ${cinderscheduler_enable:=yes}
+: ${cinderscheduler_user:=dynavisor}
+
+command="/usr/local/bin/python"
+command_args="2>/dev/null&" 
+
+start_precmd="${name}_prestart"
+
+cinderscheduler_prestart()
+{
+    rc_flags="/opt/stack/cinder/bin/cinder-scheduler --config-file /usr/local/etc/cinder/cinder.conf ${rc_flags}"
+    return 0
+}
+
+run_rc_command "$1"

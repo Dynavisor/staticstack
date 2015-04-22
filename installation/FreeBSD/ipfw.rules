@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+
+cmd='ipfw add'
+$cmd 65000 allow ip from any to any

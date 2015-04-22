@@ -1,0 +1,30 @@
+#!/bin/sh
+
+# PROVIDE: nova-api
+# REQUIRE: LOGIN mysql
+# BEFORE: nova-api-metadata
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="novaapi"
+rcvar=novaapi_enable
+
+load_rc_config $name
+: ${novaapi_enable:=yes}
+: ${novaapi_user:=dynavisor}
+
+command="/usr/local/bin/nova-api"
+command_args="2>/dev/null&"
+command_interpreter=/usr/local/bin/python2.7
+
+start_precmd="${name}_prestart"
+
+novaapi_prestart()
+{
+    rc_flags="--config-file /usr/local/etc/nova/nova.conf ${rc_flags}"
+    return 0
+}
+
+
+run_rc_command "$1"

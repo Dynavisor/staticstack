@@ -1,0 +1,29 @@
+#!/bin/sh
+
+# PROVIDE: glance-registry
+# REQUIRE: keystone
+# BEFORE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="glanceregistry"
+rcvar=glanceregistry_enable
+
+load_rc_config $name
+: ${glanceregistry_enable:=yes}
+
+command="/usr/local/bin/glance-registry"
+command_args="2>/dev/null&"
+command_interpreter=/usr/local/bin/python2.7
+
+start_precmd="${name}_prestart"
+
+glanceregistry_prestart()
+{
+    rc_flags="--config-file=/etc/glance/glance-registry.conf ${rc_flags}"
+    return 0
+}
+
+
+run_rc_command "$1"

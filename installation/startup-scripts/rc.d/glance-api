@@ -1,0 +1,29 @@
+#!/bin/sh
+
+# PROVIDE: glance-api 
+# REQUIRE: keystone
+# BEFORE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="glanceapi"
+rcvar=glanceapi_enable
+
+load_rc_config $name
+: ${glanceapi_enable:=yes}
+
+command="/usr/local/bin/glance-api"
+command_args="2>/dev/null&"
+command_interpreter=/usr/local/bin/python2.7
+
+start_precmd="${name}_prestart"
+
+glanceapi_prestart()
+{
+    rc_flags="--config-file=/etc/glance/glance-api.conf ${rc_flags}"
+    return 0
+}
+
+
+run_rc_command "$1"

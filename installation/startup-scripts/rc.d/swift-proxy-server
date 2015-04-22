@@ -1,0 +1,28 @@
+#!/bin/sh
+
+# PROVIDE: swift-proxy-server
+# REQUIRE: keystone
+# BEFORE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="swiftproxyserver"
+rcvar=swiftproxyserver_enable
+
+load_rc_config $name
+: ${swiftproxyserver_enable:=yes}
+
+command="/usr/local/bin/python"
+command_args="2>/dev/null&" 
+
+start_precmd="${name}_prestart"
+
+swiftproxyserver_prestart()
+{
+    rc_flags="/opt/stack/swift/bin/swift-proxy-server /etc/swift/proxy-server.conf ${rc_flags}"
+    return 0
+}
+
+
+run_rc_command "$1"
